@@ -39,7 +39,8 @@ class CircleEnv():
 			self.state[i, :] = self.state[i+1, :]
 		self.state[4, :] = np.array(self.p)
 
-		if self.n_step >= self.max_step or abs(self.p[0]) >= 1 or abs(self.p[1]) >= 1:
+		# if self.n_step >= self.max_step or abs(self.p[0]) >= 1 or abs(self.p[1]) >= 1:
+		if self.n_step >= self.max_step:
 			done = True
 		else:
 			done = False

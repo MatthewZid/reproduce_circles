@@ -8,6 +8,7 @@ import random
 from tensorflow.python.keras.engine import training
 from circle_env import CircleEnv
 import tqdm
+import math
 
 cpu_device = tf.config.get_visible_devices()
 tf.config.set_visible_devices(cpu_device[0], 'CPU')
@@ -26,8 +27,8 @@ class CircleAgent():
 
     def create_generator(self, initializer):
         states = Input(shape=self.state_dims)
-        x = Flatten()(states)
-        x = Dense(128, kernel_initializer=initializer)(x)
+        # x = Flatten()(states)
+        x = Dense(128, kernel_initializer=initializer)(states)
         x = ReLU()(x)
         x = Dense(128, kernel_initializer=initializer)(x)
         codes = Input(shape=self.code_dims)
@@ -60,14 +61,24 @@ class CircleAgent():
         # generate actions for every current state
         state_obsrv = self.env.reset() # reset environment state
         code_tf = tf.constant(code)
+        code_tf = tf.expand_dims(code_tf, axis=0)
 
         while True:
             # 1. generate actions with generator
             state_tf = tf.constant(state_obsrv)
+            state_tf = tf.expand_dims(state_tf, axis=0)
             action = self.generator([state_tf, code_tf], training=False)
+            action = tf.squeeze(action).numpy()
+            norm  = math.sqrt(action[0]*action[0] + action[1]*action[1])
 
-            s_traj.append(state_obsrv)
-            a_traj.append(action.numpy())
+            if norm > 1e-8:
+                action = np.array([action[0] / norm, action[1] / norm], dtype=np.float32)
+            else:
+                action = np.array([0,0], dtype=np.float32)
+
+            current_state = (state_obsrv[-2], state_obsrv[-1])
+            s_traj.append(current_state)
+            a_traj.append(action)
 
             # 2. environment step
             state_obsrv, done = self.env.step(action)
@@ -81,7 +92,7 @@ class CircleAgent():
     
     def infogail(self):
         # load data
-        expert_states, expert_actions, code_prob = pkl.load(open("circles/circle_traj.pkl", "rb"))
+        expert_states, expert_actions, code_prob = pkl.load(open("circle_traj.pkl", "rb"))
 
         # Sample a batch of latent codes: ci ∼ p(c)
         sampled_codes = np.zeros((self.batch, self.code_dims))
@@ -92,8 +103,13 @@ class CircleAgent():
         
         # Sample trajectories: τi ∼ πθi(ci), with the latent code fixed during each rollout
         traj = []
-        for code in sampled_codes:
-            pass
+        # for code in sampled_codes:
+        #     pass
+        
+        policy0 = self.__generate_policy(sampled_codes[0])
+        print(policy0[0].shape)
+        # policy1 = self.__generate_policy(sampled_codes[1])
 
 # main
-agent = CircleAgent((5,2), 3)
+agent = CircleAgent(10, 3)
+agent.infogail()
