@@ -1,6 +1,7 @@
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Dense, ReLU, Flatten, Add
 from tensorflow.keras.models import Model
+import matplotlib.pyplot as plt
 import pickle as pkl
 import numpy as np
 import random
@@ -90,6 +91,10 @@ class CircleAgent():
         
         return (s_traj, a_traj)
     
+    def view_traj(self, traj):
+        plt.scatter(traj[:,0], traj[:,1], c=['red'], alpha=0.4)
+        plt.show()
+    
     def infogail(self):
         # load data
         expert_states, expert_actions, code_prob = pkl.load(open("circle_traj.pkl", "rb"))
@@ -107,7 +112,7 @@ class CircleAgent():
         #     pass
         
         policy0 = self.__generate_policy(sampled_codes[0])
-        print(policy0[0].shape)
+        self.view_traj(policy0[0])
         # policy1 = self.__generate_policy(sampled_codes[1])
 
 # main
