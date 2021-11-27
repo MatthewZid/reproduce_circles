@@ -8,7 +8,7 @@ import random
 
 from tensorflow.python.keras.engine import training
 from circle_env import CircleEnv
-import tqdm
+from tqdm import tqdm
 import math
 
 cpu_device = tf.config.get_visible_devices()
@@ -103,20 +103,24 @@ class CircleAgent():
         # Sample a batch of latent codes: ci ∼ p(c)
         sampled_codes = np.zeros((self.batch, self.code_dims))
         code_ids = np.arange(0,self.code_dims)
-        for i in range(self.batch):
+        print("\nGenerating codes...")
+        for i in tqdm(range(self.batch)):
             pick = np.random.choice(code_ids, p=code_prob)
             sampled_codes[i, pick] = 1
         
         # Sample trajectories: τi ∼ πθi(ci), with the latent code fixed during each rollout
-        traj = []
-        for code in sampled_codes:
-            trajectory = self.__generate_policy(code)
-            traj.append(trajectory)
-
-        # self.view_traj(traj[0][0])
+        traj = [[], []]
+        print("\nGenerating trajectories...")
+        for i in tqdm(range(len(sampled_codes))):
+            trajectory = self.__generate_policy(sampled_codes[i])
+            traj[0].append(trajectory[0])
+            traj[1].append(trajectory[1])
+        
+        traj[0] = np.concatenate(traj[0])
+        traj[1] = np.concatenate(traj[1])
 
         # Sample state-action pairs χi ~ τi and χΕ ~ τΕ with the same batch size
-        
+        generated_idx = np.random.choice(traj[0].shape[0], self.batch, replace=False)
 
 # main
 agent = CircleAgent(10, 2, 3)
