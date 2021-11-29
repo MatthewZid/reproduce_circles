@@ -1,11 +1,12 @@
 import math
 import numpy as np
+import random
 
 class CircleEnv():
 	#-------------------------
 	# Constructor
 	#-------------------------
-	def __init__(self, sigma1=0.01, max_step=512, rand=False, starting_point=(0,-0.25)):
+	def __init__(self, sigma1=0.01, max_step=16, rand=False, starting_point=(0,-0.25)):
 		self.state    = np.zeros((5, 2), dtype=np.float32)
 		self.max_step = max_step
 		self.rand = rand
@@ -19,15 +20,16 @@ class CircleEnv():
 	#-------------------------
 	# Step
 	#-------------------------
-	def step(self, action):
+	def step(self, action, mode=True):
 		norm = math.sqrt(action[0]*action[0] + action[1]*action[1])
 
-		if norm > 1e-8:
-			action[0] /= norm
-			action[1] /= norm
-		else:
-			action[0] = 1.0
-			action[1] = 0.0
+		if mode:
+			if norm > 1e-8:
+				action[0] /= norm
+				action[1] /= norm
+			else:
+				action[0] = 1.0
+				action[1] = 0.0
 
 		self.p[0] += action[0]
 		self.p[1] += action[1]
@@ -39,11 +41,11 @@ class CircleEnv():
 			self.state[i, :] = self.state[i+1, :]
 		self.state[4, :] = np.array(self.p)
 
-		# if self.n_step >= self.max_step or abs(self.p[0]) >= 1 or abs(self.p[1]) >= 1:
-		if self.n_step >= self.max_step:
-			done = True
-		else:
-			done = False
+		done = False
+		if mode:
+			# if self.n_step >= self.max_step or abs(self.p[0]) >= 1 or abs(self.p[1]) >= 1:
+			if self.n_step >= self.max_step:
+				done = True
 
 		return np.copy(self.state.flatten()), done
 
