@@ -6,7 +6,7 @@ class CircleEnv():
 	#-------------------------
 	# Constructor
 	#-------------------------
-	def __init__(self, sigma1=0.01, max_step=16, rand=False, starting_point=(0,-0.25)):
+	def __init__(self, sigma1=0.01, max_step=512, rand=False, starting_point=(0,-0.25)):
 		self.state    = np.zeros((5, 2), dtype=np.float32)
 		self.max_step = max_step
 		self.rand = rand
