@@ -1,7 +1,7 @@
 import pickle as pkl
 import matplotlib.pyplot as plt
 
-states, actions = pkl.load(open("expert_traj.pkl", "rb"))
+states, _, _ = pkl.load(open("expert_traj.pkl", "rb"))
 
 plt.xlim(-1, 1)
 plt.ylim(-1, 1)
