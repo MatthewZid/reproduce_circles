@@ -11,12 +11,12 @@ from circle_env import CircleEnv
 from tqdm import tqdm
 import math
 
-cpu_device = tf.config.get_visible_devices()
-tf.config.set_visible_devices(cpu_device[0], 'CPU')
+# cpu_device = tf.config.get_visible_devices()
+# tf.config.set_visible_devices(cpu_device[0], 'CPU')
 
 class CircleAgent():
     def __init__(self, state_dims, action_dims, code_dims, batch_size=32, max_ep=1024):
-        self.env = CircleEnv(max_step=200)
+        self.env = CircleEnv(max_step=256)
         self.max_ep = max_ep
         initializer = tf.keras.initializers.HeUniform()
         self.batch = batch_size
@@ -25,6 +25,10 @@ class CircleAgent():
         self.code_dims = code_dims
         self.generator = self.create_generator(initializer)
         self.discriminator = self.create_discriminator(initializer)
+        self.generated_states = []
+        self.generated_actions = []
+        self.expert_states = []
+        self.expert_actions = []
         print('\nAgent created')
 
     def create_generator(self, initializer):
@@ -95,10 +99,25 @@ class CircleAgent():
     def view_traj(self, traj):
         plt.scatter(traj[:,-2], traj[:,-1], c=['red'], alpha=0.4)
         plt.show()
+
+    def train(self):
+        pass
     
     def infogail(self):
         # load data
-        expert_states, expert_actions, code_prob = pkl.load(open("circle_traj.pkl", "rb"))
+        self.expert_states, self.expert_actions, code_prob = pkl.load(open("expert_traj.pkl", "rb"))
+
+        self.expert_states = np.concatenate(self.expert_states)
+        self.expert_actions = np.concatenate(self.expert_actions)
+        self.expert_states = tf.convert_to_tensor(self.expert_states, dtype=tf.float32)
+        self.expert_actions = tf.convert_to_tensor(self.expert_actions, dtype=tf.float32)
+
+        self.expert_states = tf.data.Dataset.from_tensor_slices(self.expert_states)
+        self.expert_states = self.expert_states.shuffle(buffer_size=5000).batch(self.batch)
+        self.expert_actions = tf.data.Dataset.from_tensor_slices(self.expert_actions)
+        self.expert_actions = self.expert_actions.shuffle(buffer_size=5000).batch(self.batch)
+
+        # place an epoch loop here
 
         # Sample a batch of latent codes: ci ∼ p(c)
         sampled_codes = np.zeros((self.batch, self.code_dims))
@@ -109,18 +128,35 @@ class CircleAgent():
             sampled_codes[i, pick] = 1
         
         # Sample trajectories: τi ∼ πθi(ci), with the latent code fixed during each rollout
-        traj = [[], []]
+        self.generated_states = []
+        self.generated_actions = []
         print("\nGenerating trajectories...")
         for i in tqdm(range(len(sampled_codes))):
             trajectory = self.__generate_policy(sampled_codes[i])
-            traj[0].append(trajectory[0])
-            traj[1].append(trajectory[1])
+            self.generated_states.append(trajectory[0])
+            self.generated_actions.append(trajectory[1])
+            # plt.figure()
+            # plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], c=['red'], alpha=0.4)
+            # plt.savefig("./plots/trajectory_"+str(i), dpi=100)
+            # plt.close()
         
-        traj[0] = np.concatenate(traj[0])
-        traj[1] = np.concatenate(traj[1])
+        self.generated_states = np.concatenate(self.generated_states)
+        self.generated_actions = np.concatenate(self.generated_actions)
 
         # Sample state-action pairs χi ~ τi and χΕ ~ τΕ with the same batch size
-        generated_idx = np.random.choice(traj[0].shape[0], self.batch, replace=False)
+        # generated_idx = np.random.choice(generated_states.shape[0], self.batch, replace=False)
+        # expert_idx = np.random.choice(expert_states.shape[0], self.batch, replace=False)
+        print("\nCreating dataset...")
+        # probably wrong, sample batch first like above in comments and create the dataset with the batch
+        self.generated_states = tf.convert_to_tensor(self.generated_states, dtype=tf.float32)
+        self.generated_actions = tf.convert_to_tensor(self.generated_actions, dtype=tf.float32)
+
+        self.generated_states = tf.data.Dataset.from_tensor_slices(self.generated_states)
+        self.generated_states = self.generated_states.shuffle(buffer_size=10000).batch(self.batch)
+        self.generated_actions = tf.data.Dataset.from_tensor_slices(self.generated_actions)
+        self.generated_actions = self.generated_actions.shuffle(buffer_size=10000).batch(self.batch)
+
+        # call train here
 
 # main
 agent = CircleAgent(10, 2, 3)
