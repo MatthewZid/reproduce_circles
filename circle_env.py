@@ -21,15 +21,15 @@ class CircleEnv():
 	# Step
 	#-------------------------
 	def step(self, action, mode=True):
-		norm = math.sqrt(action[0]*action[0] + action[1]*action[1])
+		# norm = math.sqrt(action[0]*action[0] + action[1]*action[1])
 
-		if mode:
-			if norm > 1e-8:
-				action[0] /= norm
-				action[1] /= norm
-			else:
-				action[0] = 1.0
-				action[1] = 0.0
+		# if mode:
+		# 	if norm > 1e-8:
+		# 		action[0] /= norm
+		# 		action[1] /= norm
+		# 	else:
+		# 		action[0] = 1.0
+		# 		action[1] = 0.0
 
 		self.p[0] += action[0]
 		self.p[1] += action[1]
