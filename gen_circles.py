@@ -8,6 +8,7 @@ from tqdm import tqdm
 env = CircleEnv()
 s_traj = []
 a_traj = []
+c_traj = []
 code_prob = []
 r = [0.5, 0.25, 0.25]
 total_points = 1200 + 700 + 700
@@ -19,6 +20,7 @@ for i in range(len(r)):
     state = env.reset()
     s_traj.append([])
     a_traj.append([])
+    c_traj.append([])
 
     up = 1
     theta = 360.0 / n[i]
@@ -38,11 +40,15 @@ for i in range(len(r)):
 
         s_traj[i].append(state)
         a_traj[i].append([dx, dy])
+        one_hot_code = np.zeros(len(r))
+        one_hot_code[i] = 1
+        c_traj[i].append(one_hot_code)
 
         state, _ = env.step([dx,dy], mode=False)
     
     s_traj[i] = np.array(s_traj[i], dtype=np.float32)
     a_traj[i] = np.array(a_traj[i], dtype=np.float32)
+    c_traj[i] = np.array(c_traj[i], dtype=np.int)
     code_prob.append(n[i] / total_points)
 
-pkl.dump((s_traj, a_traj, code_prob), open("./expert_traj.pkl", "wb"))
+pkl.dump((s_traj, a_traj, c_traj, code_prob), open("./expert_traj.pkl", "wb"))
