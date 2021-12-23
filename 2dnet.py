@@ -27,6 +27,7 @@ class CircleAgent():
         self.generator = self.create_generator(initializer)
         self.discriminator = self.create_discriminator(initializer)
         self.posterior = self.create_posterior(code_dims, initializer)
+        self.value_net = self.create_valuenet(initializer)
         self.sampled_states = []
         self.sampled_actions = []
         self.sampled_codes = []
@@ -76,6 +77,19 @@ class CircleAgent():
         output = tf.keras.activations.softmax(x)
 
         model = Model(inputs=[states, actions], outputs=output)
+        return model
+
+    def create_valuenet(self, initializer):
+        states = Input(shape=self.state_dims)
+        codes = Input(shape=self.code_dims)
+        merged = tf.concat([states,codes], 1)
+        x = Dense(256, kernel_initializer=initializer)(merged)
+        x = ReLU()(x)
+        x = Dense(128, kernel_initializer=initializer)(x)
+        x = ReLU()(x)
+        output = Dense(1)(x)
+
+        model = Model(inputs=[states, codes], outputs=output)
         return model
     
     def __generate_policy(self, code):
@@ -170,7 +184,7 @@ class CircleAgent():
         sampled_codes = np.zeros((self.batch, self.code_dims))
         code_ids = np.arange(0,self.code_dims)
         print("\nGenerating codes...")
-        for i in tqdm(range(self.batch)):
+        for i in tqdm.tqdm(range(self.batch)):
             pick = np.random.choice(code_ids, p=code_prob)
             sampled_codes[i, pick] = 1
         
@@ -179,7 +193,7 @@ class CircleAgent():
         generated_actions = []
         generated_codes = []
         print("\nGenerating trajectories...")
-        for i in tqdm(range(len(sampled_codes))):
+        for i in tqdm.tqdm(range(len(sampled_codes))):
             trajectory = self.__generate_policy(sampled_codes[i])
             generated_states.append(trajectory[0])
             generated_actions.append(trajectory[1])
