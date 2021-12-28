@@ -96,6 +96,7 @@ class CircleAgent():
         s_traj = []
         a_traj = []
         c_traj = []
+        reward = 0.0
 
         # generate actions for every current state
         state_obsrv = self.env.reset() # reset environment state
@@ -113,7 +114,7 @@ class CircleAgent():
             if norm > 1e-8:
                 action = np.array([action[0] / norm, action[1] / norm], dtype=np.float32)
             else:
-                action = np.array([0,0], dtype=np.float32)
+                action = np.array([0.0,0.0], dtype=np.float32)
 
             # current_state = (state_obsrv[-2], state_obsrv[-1])
             s_traj.append(state_obsrv)
