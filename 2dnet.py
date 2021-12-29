@@ -1,3 +1,6 @@
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
+
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Dense, ReLU, Flatten, Add
 from tensorflow.keras.models import Model
