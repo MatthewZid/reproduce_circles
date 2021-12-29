@@ -136,7 +136,6 @@ class CircleAgent():
                 a_traj = np.array(a_traj, dtype=np.float32)
                 c_traj = np.array(c_traj, dtype=np.float32)
                 reward = np.array(rewards, dtype=np.float32)
-                print(reward)
                 break
         
         return (s_traj, a_traj, c_traj, rewards)
