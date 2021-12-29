@@ -99,7 +99,7 @@ class CircleAgent():
         s_traj = []
         a_traj = []
         c_traj = []
-        reward = []
+        rewards = []
 
         # generate actions for every current state
         state_obsrv = self.env.reset() # reset environment state
@@ -124,6 +124,10 @@ class CircleAgent():
             a_traj.append(action)
             c_traj.append(code)
 
+            action_tf = tf.constant(action)
+            action_tf = tf.expand_dims(action_tf, axis=0)
+            rewards.append(self.discriminator([state_tf, action_tf], training=False).numpy()[0][0])
+
             # 2. environment step
             state_obsrv, done = self.env.step(action)
 
@@ -131,9 +135,11 @@ class CircleAgent():
                 s_traj = np.array(s_traj, dtype=np.float32)
                 a_traj = np.array(a_traj, dtype=np.float32)
                 c_traj = np.array(c_traj, dtype=np.float32)
+                reward = np.array(rewards, dtype=np.float32)
+                print(reward)
                 break
         
-        return (s_traj, a_traj, c_traj)
+        return (s_traj, a_traj, c_traj, rewards)
     
     def __disc_loss(self, score):
         cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
