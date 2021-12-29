@@ -99,7 +99,7 @@ class CircleAgent():
         s_traj = []
         a_traj = []
         c_traj = []
-        reward = 0.0
+        reward = []
 
         # generate actions for every current state
         state_obsrv = self.env.reset() # reset environment state
