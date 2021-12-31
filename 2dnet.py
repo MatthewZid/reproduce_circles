@@ -19,11 +19,13 @@ from trpo import *
 # tf.config.set_visible_devices(cpu_device[0], 'CPU')
 
 class CircleAgent():
-    def __init__(self, state_dims, action_dims, code_dims, batch_size=32, max_ep=1024):
+    def __init__(self, state_dims, action_dims, code_dims, batch_size=32, code_batch=64, sample_size=1500, max_ep=1024):
         self.env = CircleEnv(max_step=256)
         self.max_ep = max_ep
         initializer = tf.keras.initializers.HeUniform()
         self.batch = batch_size
+        self.code_batch = code_batch
+        self.sample_size = sample_size
         self.state_dims = state_dims
         self.action_dims = action_dims
         self.code_dims = code_dims
@@ -31,9 +33,7 @@ class CircleAgent():
         self.discriminator = self.create_discriminator(initializer)
         self.posterior = self.create_posterior(code_dims, initializer)
         self.value_net = self.create_valuenet(initializer)
-        self.sampled_states = []
-        self.sampled_actions = []
-        self.sampled_codes = []
+        self.dataset = []
         self.disc_optimizer = tf.keras.optimizers.RMSprop()
         self.posterior_optimizer = tf.keras.optimizers.Adam()
         print('\nAgent created')
@@ -99,7 +99,6 @@ class CircleAgent():
         s_traj = []
         a_traj = []
         c_traj = []
-        rewards = []
 
         # generate actions for every current state
         state_obsrv = self.env.reset() # reset environment state
@@ -124,10 +123,6 @@ class CircleAgent():
             a_traj.append(action)
             c_traj.append(code)
 
-            action_tf = tf.constant(action)
-            action_tf = tf.expand_dims(action_tf, axis=0)
-            rewards.append(self.discriminator([state_tf, action_tf], training=False).numpy()[0][0])
-
             # 2. environment step
             state_obsrv, done = self.env.step(action)
 
@@ -135,10 +130,9 @@ class CircleAgent():
                 s_traj = np.array(s_traj, dtype=np.float32)
                 a_traj = np.array(a_traj, dtype=np.float32)
                 c_traj = np.array(c_traj, dtype=np.float32)
-                rewards = np.array(rewards, dtype=np.float32)
                 break
         
-        return (s_traj, a_traj, c_traj, rewards)
+        return (s_traj, a_traj, c_traj)
     
     def __disc_loss(self, score):
         cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
@@ -147,10 +141,10 @@ class CircleAgent():
 
         return loss
 
-    def __post_loss(self, prob):
+    def __post_loss(self, prob, codes_batch):
         cross_entropy = tf.keras.losses.CategoricalCrossentropy()
 
-        loss = cross_entropy(self.sampled_codes, prob)
+        loss = cross_entropy(codes_batch, prob)
 
         return loss
     
@@ -160,22 +154,24 @@ class CircleAgent():
 
     def train(self):
         # train discriminator
-        with tf.GradientTape() as disc_tape:
-            score = self.discriminator([self.sampled_states, self.sampled_actions], training=True)
+        for _, (states_batch, actions_batch, _) in enumerate(self.dataset):
+            with tf.GradientTape() as disc_tape:
+                score = self.discriminator([states_batch, actions_batch], training=True)
 
-            disc_loss = self.__disc_loss(score)
-        
-        gradients_of_discriminator = disc_tape.gradient(disc_loss, self.discriminator.trainable_weights)
-        self.disc_optimizer.apply_gradients(zip(gradients_of_discriminator, self.discriminator.trainable_weights))
+                disc_loss = self.__disc_loss(score)
+            
+            gradients_of_discriminator = disc_tape.gradient(disc_loss, self.discriminator.trainable_weights)
+            self.disc_optimizer.apply_gradients(zip(gradients_of_discriminator, self.discriminator.trainable_weights))
 
         # train posterior
-        with tf.GradientTape() as post_tape:
-            prob = self.posterior([self.sampled_states, self.sampled_actions], training=True)
+        for _, (states_batch, actions_batch, codes_batch) in enumerate(self.dataset):
+            with tf.GradientTape() as post_tape:
+                prob = self.posterior([states_batch, actions_batch], training=True)
 
-            post_loss = self.__post_loss(prob)
-        
-        gradients_of_posterior = disc_tape.gradient(post_loss, self.posterior.trainable_weights)
-        self.posterior_optimizer.apply_gradients(zip(gradients_of_posterior, self.posterior.trainable_weights))
+                post_loss = self.__post_loss(prob, codes_batch)
+            
+            gradients_of_posterior = post_tape.gradient(post_loss, self.posterior.trainable_weights)
+            self.posterior_optimizer.apply_gradients(zip(gradients_of_posterior, self.posterior.trainable_weights))
 
         # train generator (TRPO)
     
@@ -190,10 +186,10 @@ class CircleAgent():
         # probably place an epoch loop here
 
         # Sample a batch of latent codes: ci ∼ p(c)
-        sampled_codes = np.zeros((self.batch, self.code_dims))
+        sampled_codes = np.zeros((self.code_batch, self.code_dims))
         code_ids = np.arange(0,self.code_dims)
         print("\nGenerating codes...")
-        for i in tqdm.tqdm(range(self.batch)):
+        for i in tqdm.tqdm(range(self.code_batch)):
             pick = np.random.choice(code_ids, p=code_prob)
             sampled_codes[i, pick] = 1
         
@@ -218,8 +214,8 @@ class CircleAgent():
 
         # Sample state-action pairs χi ~ τi and χΕ ~ τΕ with the same batch size
         print("\nSampling state-action pairs...")
-        generated_idx = np.random.choice(generated_states.shape[0], int(self.batch/2), replace=False)
-        expert_idx = np.random.choice(expert_states.shape[0], int(self.batch/2), replace=False)
+        generated_idx = np.random.choice(generated_states.shape[0], self.sample_size, replace=False)
+        expert_idx = np.random.choice(expert_states.shape[0], self.sample_size, replace=False)
 
         generated_states = generated_states[generated_idx, :]
         generated_actions = generated_actions[generated_idx, :]
@@ -228,28 +224,24 @@ class CircleAgent():
         sampled_expert_actions = expert_actions[expert_idx, :]
         sampled_expert_codes = expert_codes[expert_idx, :]
 
-        self.sampled_states = np.concatenate([generated_states, sampled_expert_states])
-        self.sampled_actions = np.concatenate([generated_actions, sampled_expert_actions])
-        self.sampled_codes = np.concatenate([generated_codes, sampled_expert_codes])
+        sampled_states = np.concatenate([generated_states, sampled_expert_states])
+        sampled_actions = np.concatenate([generated_actions, sampled_expert_actions])
+        sampled_codes = np.concatenate([generated_codes, sampled_expert_codes])
 
         # shuffle indices
-        idx = np.arange(len(self.sampled_states))
+        idx = np.arange(len(sampled_states))
         np.random.shuffle(idx)
-        self.sampled_states = self.sampled_states[idx]
-        self.sampled_actions = self.sampled_actions[idx]
-        self.sampled_codes = self.sampled_codes[idx]
+        sampled_states = sampled_states[idx]
+        sampled_actions = sampled_actions[idx]
+        sampled_codes = sampled_codes[idx]
 
         print("Creating dataset...")
-        self.sampled_states = tf.convert_to_tensor(self.sampled_states, dtype=tf.float32)
-        self.sampled_actions = tf.convert_to_tensor(self.sampled_actions, dtype=tf.float32)
-        self.sampled_codes = tf.convert_to_tensor(self.sampled_codes, dtype=tf.float32)
+        sampled_states = tf.convert_to_tensor(sampled_states, dtype=tf.float32)
+        sampled_actions = tf.convert_to_tensor(sampled_actions, dtype=tf.float32)
+        sampled_codes = tf.convert_to_tensor(sampled_codes, dtype=tf.float32)
 
-        self.sampled_states = tf.data.Dataset.from_tensor_slices(self.sampled_states)
-        self.sampled_states = self.sampled_states.batch(batch_size=self.batch)
-        self.sampled_actions = tf.data.Dataset.from_tensor_slices(self.sampled_actions)
-        self.sampled_actions = self.sampled_actions.batch(batch_size=self.batch)
-        self.sampled_codes = tf.data.Dataset.from_tensor_slices(self.sampled_codes)
-        self.sampled_codes = self.sampled_codes.batch(batch_size=self.batch)
+        self.dataset = tf.data.Dataset.from_tensor_slices((sampled_states, sampled_actions, sampled_codes))
+        self.dataset = self.dataset.batch(batch_size=self.batch)
 
         # call train here
 
