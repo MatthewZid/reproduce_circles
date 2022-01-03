@@ -14,11 +14,11 @@ def var_shape(x):
     return out
 
 def numel(x):
-    return np.prod(var_shape(x))
+    return np.prod(x.shape)
 
 def get_flat(model):
     var_list = model.trainable_weights
-    return tf.concat(0, [tf.reshape(v, [numel(v)]) for v in var_list])
+    return tf.concat([tf.reshape(v, [numel(v)]) for v in var_list], 0)
 
 def linesearch(f, x, fullstep, expected_improve_rate):
     accept_ratio = .1
