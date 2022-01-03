@@ -43,6 +43,7 @@ class CircleAgent():
         self.returns = []
         self.disc_optimizer = tf.keras.optimizers.RMSprop()
         self.posterior_optimizer = tf.keras.optimizers.Adam()
+        self.value_optimizer = tf.keras.optimizers.Adam()
         print('\nAgent created')
 
     def create_generator(self, initializer):
@@ -155,6 +156,13 @@ class CircleAgent():
 
         return loss
     
+    def __value_loss(self, pred, returns):
+        mse = tf.keras.losses.MeanSquaredError()
+
+        loss = mse(returns, pred)
+
+        return loss
+    
     def view_traj(self, traj):
         plt.scatter(traj[:,-2], traj[:,-1], c=['red'], alpha=0.4)
         plt.show()
@@ -208,7 +216,26 @@ class CircleAgent():
         self.advants /= (self.advants.std() + 1e-8)
 
         # train value net for next iter
+        returns_old = self.value_net([sampled_states, sampled_codes], training=False).numpy().flatten()
+        rets = self.returns * 0.1 + returns_old * 0.9
+
+        rets = tf.convert_to_tensor(rets, dtype=tf.float32)
+        dataset = tf.data.Dataset.from_tensor_slices((sampled_states, sampled_actions, sampled_codes, rets))
+        dataset = dataset.batch(batch_size=self.batch)
+
+        for _, (states_batch, _, codes_batch, returns_batch) in enumerate(dataset):
+            with tf.GradientTape as value_tape:
+                value_pred = self.value_net([states_batch, codes_batch], training=True)
+
+                value_loss = self.__value_loss(value_pred, returns_batch)
+            
+            value_grads = value_tape.gradient(value_loss, self.value_net.trainable_weights)
+            self.value_optimizer.apply_gradients(zip(value_grads, self.value_net.trainable_weights))
         
+        # calculate previous theta (θold)
+        thprev = get_flat(self.generator)
+
+        # calculate generator gradients (g)
     
     def infogail(self):
         # load data
