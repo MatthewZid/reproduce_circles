@@ -56,7 +56,7 @@ class CircleAgent():
         c = Dense(128, kernel_initializer=initializer)(codes)
         h = Add()([x, c])
         h = ReLU()(h)
-        actions = Dense(2, activation='sigmoid')(h)
+        actions = Dense(2, activation='tanh')(h)
 
         model = Model(inputs=[states,codes], outputs=actions)
         return model
@@ -212,7 +212,7 @@ class CircleAgent():
         self.advants = discount(deltas, self.gamma * self.lam)
         self.returns = discount(self.sampled_rewards, self.gamma)
 
-        # standardize advants
+        # standardize advantages
         self.advants /= (self.advants.std() + 1e-8)
 
         # train value net for next iter
@@ -224,7 +224,7 @@ class CircleAgent():
         dataset = dataset.batch(batch_size=self.batch)
 
         for _, (states_batch, _, codes_batch, returns_batch) in enumerate(dataset):
-            with tf.GradientTape as value_tape:
+            with tf.GradientTape() as value_tape:
                 value_pred = self.value_net([states_batch, codes_batch], training=True)
 
                 value_loss = self.__value_loss(value_pred, returns_batch)
@@ -235,7 +235,9 @@ class CircleAgent():
         # calculate previous theta (θold)
         thprev = get_flat(self.generator)
 
-        # calculate generator gradients (g)
+        # calculate ratio between old and new policy (loss)
+        actions_mu = self.generator([sampled_states, sampled_codes], training=False).numpy()
+        # actions_logstd = np.zeros_like(actions_mu)
     
     def infogail(self):
         # load data
