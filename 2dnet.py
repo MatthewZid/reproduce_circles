@@ -41,6 +41,7 @@ class CircleAgent():
         self.values = []
         self.advants = []
         self.returns = []
+        self.logstds = []
         self.disc_optimizer = tf.keras.optimizers.RMSprop()
         self.posterior_optimizer = tf.keras.optimizers.Adam()
         self.value_optimizer = tf.keras.optimizers.Adam()
@@ -237,7 +238,11 @@ class CircleAgent():
 
         # calculate ratio between old and new policy (loss)
         actions_mu = self.generator([sampled_states, sampled_codes], training=False).numpy()
-        # actions_logstd = np.zeros_like(actions_mu)
+        # old actions mu???
+        actions_logstd = np.ones_like(actions_mu)
+        actions_logstd *= self.logstds
+
+        log_p_n = gauss_log_prob(actions_mu, actions_logstd, sampled_actions)
     
     def infogail(self):
         # load data
@@ -246,6 +251,9 @@ class CircleAgent():
         expert_states = np.concatenate(expert_states)
         expert_actions = np.concatenate(expert_actions)
         expert_codes = np.concatenate(expert_codes)
+
+        # log stds of expert actions (probably wrong and unnecessary)
+        self.logstds = np.log(np.std(expert_actions, 0))
 
         # probably place an epoch loop here
 

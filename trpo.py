@@ -7,6 +7,11 @@ def discount(x, gamma):
     assert x.ndim >= 1
     return signal.lfilter([1], [1, -gamma], x[::-1], axis=0)[::-1]
 
+def gauss_log_prob(mu, logstd, x):
+    var = tf.exp(2*logstd)
+    gp = -tf.square(x - mu)/(2 * var) - .5*tf.log(tf.constant(2*np.pi)) - logstd
+    return tf.reduce_sum(gp, [1])
+
 def var_shape(x):
     out = [k.value for k in x.get_shape()]
     assert all(isinstance(a, int) for a in out), \
