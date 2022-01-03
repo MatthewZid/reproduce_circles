@@ -1,5 +1,10 @@
 import numpy as np
 import tqdm
+from scipy import signal
+
+def discount(x, gamma):
+    assert x.ndim >= 1
+    return signal.lfilter([1], [1, -gamma], x[::-1], axis=0)[::-1]
 
 def linesearch(f, x, fullstep, expected_improve_rate):
     accept_ratio = .1
