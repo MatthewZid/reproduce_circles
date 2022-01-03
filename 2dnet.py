@@ -19,11 +19,12 @@ from trpo import *
 # tf.config.set_visible_devices(cpu_device[0], 'CPU')
 
 class CircleAgent():
-    def __init__(self, state_dims, action_dims, code_dims, batch_size=32, code_batch=64, sample_size=1500, max_ep=1024):
+    def __init__(self, state_dims, action_dims, code_dims, batch_size=32, code_batch=64, sample_size=1500, gamma=0.95, lam=0.97):
         self.env = CircleEnv(max_step=256)
-        self.max_ep = max_ep
         initializer = tf.keras.initializers.HeUniform()
         self.batch = batch_size
+        self.gamma = gamma
+        self.lam = lam
         self.code_batch = code_batch
         self.sample_size = sample_size
         self.state_dims = state_dims
@@ -33,7 +34,13 @@ class CircleAgent():
         self.discriminator = self.create_discriminator(initializer)
         self.posterior = self.create_posterior(code_dims, initializer)
         self.value_net = self.create_valuenet(initializer)
-        self.dataset = []
+        self.sampled_states = []
+        self.sampled_actions = []
+        self.sampled_codes = []
+        self.sampled_rewards = []
+        self.values = []
+        self.advants = []
+        self.returns = []
         self.disc_optimizer = tf.keras.optimizers.RMSprop()
         self.posterior_optimizer = tf.keras.optimizers.Adam()
         print('\nAgent created')
@@ -48,7 +55,7 @@ class CircleAgent():
         c = Dense(128, kernel_initializer=initializer)(codes)
         h = Add()([x, c])
         h = ReLU()(h)
-        actions = Dense(2)(h)
+        actions = Dense(2, activation='sigmoid')(h)
 
         model = Model(inputs=[states,codes], outputs=actions)
         return model
@@ -152,9 +159,17 @@ class CircleAgent():
         plt.scatter(traj[:,-2], traj[:,-1], c=['red'], alpha=0.4)
         plt.show()
 
-    def train(self):
+    def __train(self):
+        print("Creating dataset...")
+        sampled_states = tf.convert_to_tensor(self.sampled_states, dtype=tf.float32)
+        sampled_actions = tf.convert_to_tensor(self.sampled_actions, dtype=tf.float32)
+        sampled_codes = tf.convert_to_tensor(self.sampled_codes, dtype=tf.float32)
+
+        dataset = tf.data.Dataset.from_tensor_slices((sampled_states, sampled_actions, sampled_codes))
+        dataset = dataset.batch(batch_size=self.batch)
+
         # train discriminator
-        for _, (states_batch, actions_batch, _) in enumerate(self.dataset):
+        for _, (states_batch, actions_batch, _) in enumerate(dataset):
             with tf.GradientTape() as disc_tape:
                 score = self.discriminator([states_batch, actions_batch], training=True)
 
@@ -164,7 +179,7 @@ class CircleAgent():
             self.disc_optimizer.apply_gradients(zip(gradients_of_discriminator, self.discriminator.trainable_weights))
 
         # train posterior
-        for _, (states_batch, actions_batch, codes_batch) in enumerate(self.dataset):
+        for _, (states_batch, actions_batch, codes_batch) in enumerate(dataset):
             with tf.GradientTape() as post_tape:
                 prob = self.posterior([states_batch, actions_batch], training=True)
 
@@ -174,6 +189,26 @@ class CircleAgent():
             self.posterior_optimizer.apply_gradients(zip(gradients_of_posterior, self.posterior.trainable_weights))
 
         # train generator (TRPO)
+        # calculate rewards from discriminator and posterior
+        reward_d = self.discriminator([sampled_states, sampled_actions], training=False).numpy()
+        reward_p = self.posterior([sampled_states, sampled_actions], training=False).numpy()
+
+        self.sampled_rewards = np.ones(self.sampled_states.shape[0]) * 2 \
+            + reward_d.flatten() * 0.1 \
+            + np.sum(np.log(reward_p, out=np.zeros_like(reward_p), where=(reward_p!=0)) * self.sampled_codes, axis=1)
+        
+        # calculate values, advants and returns
+        self.values = self.value_net([sampled_states, sampled_codes], training=False).numpy().flatten()
+        baselines = np.append(self.values, 0 if self.values.shape[0] == 100 else self.values[-1])
+        deltas = self.sampled_rewards + self.gamma * baselines[1:] - baselines[:-1]
+        self.advants = discount(deltas, self.gamma * self.lam)
+        self.returns = discount(self.sampled_rewards, self.gamma)
+
+        # standardize advants
+        self.advants /= (self.advants.std() + 1e-8)
+
+        # train value net for next iter
+        
     
     def infogail(self):
         # load data
@@ -231,19 +266,12 @@ class CircleAgent():
         # shuffle indices
         idx = np.arange(len(sampled_states))
         np.random.shuffle(idx)
-        sampled_states = sampled_states[idx]
-        sampled_actions = sampled_actions[idx]
-        sampled_codes = sampled_codes[idx]
-
-        print("Creating dataset...")
-        sampled_states = tf.convert_to_tensor(sampled_states, dtype=tf.float32)
-        sampled_actions = tf.convert_to_tensor(sampled_actions, dtype=tf.float32)
-        sampled_codes = tf.convert_to_tensor(sampled_codes, dtype=tf.float32)
-
-        self.dataset = tf.data.Dataset.from_tensor_slices((sampled_states, sampled_actions, sampled_codes))
-        self.dataset = self.dataset.batch(batch_size=self.batch)
+        self.sampled_states = sampled_states[idx]
+        self.sampled_actions = sampled_actions[idx]
+        self.sampled_codes = sampled_codes[idx]
 
         # call train here
+        self.__train()
 
 # main
 agent = CircleAgent(10, 2, 3)
