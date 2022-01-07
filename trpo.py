@@ -9,7 +9,7 @@ def discount(x, gamma):
 
 def gauss_log_prob(mu, logstd, x):
     var = tf.exp(2*logstd)
-    gp = -tf.square(x - mu)/(2 * var) - .5*tf.log(tf.constant(2*np.pi)) - logstd
+    gp = -tf.square(x - mu)/(2 * var) - .5*tf.math.log(tf.constant(2*np.pi)) - logstd
     return tf.reduce_sum(gp, [1])
 
 def var_shape(x):
@@ -24,6 +24,23 @@ def numel(x):
 def get_flat(model):
     var_list = model.trainable_weights
     return tf.concat([tf.reshape(v, [numel(v)]) for v in var_list], 0)
+
+def flatgrad(model, loss, tape):
+    var_list = model.trainable_weights
+    # grads = tf.gradients(loss, var_list)
+    grads = tape.gradient(loss, var_list)
+    return tf.concat([tf.reshape(grad, [numel(v)]) for (v, grad) in zip(var_list, grads)], 0)
+
+def gauss_selfKL_firstfixed(mu, logstd):
+    mu1, logstd1 = map(tf.stop_gradient, [mu, logstd])
+    mu2, logstd2 = mu, logstd
+    return gauss_KL(mu1, logstd1, mu2, logstd2)
+
+def gauss_KL(mu1, logstd1, mu2, logstd2):
+    var1 = tf.exp(2*logstd1)
+    var2 = tf.exp(2*logstd2)
+    kl = tf.reduce_sum(logstd2 - logstd1 + (var1 + tf.square(mu1 - mu2))/(2*var2) - 0.5)
+    return kl
 
 def linesearch(f, x, fullstep, expected_improve_rate):
     accept_ratio = .1

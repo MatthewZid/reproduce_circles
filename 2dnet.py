@@ -1,4 +1,6 @@
 import os
+
+from tensorflow.python.keras.backend import var
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 
 import tensorflow as tf
@@ -41,7 +43,7 @@ class CircleAgent():
         self.values = []
         self.advants = []
         self.returns = []
-        self.logstds = []
+        self.sampled_mus = []
         self.disc_optimizer = tf.keras.optimizers.RMSprop()
         self.posterior_optimizer = tf.keras.optimizers.Adam()
         self.value_optimizer = tf.keras.optimizers.Adam()
@@ -167,6 +169,33 @@ class CircleAgent():
     def view_traj(self, traj):
         plt.scatter(traj[:,-2], traj[:,-1], c=['red'], alpha=0.4)
         plt.show()
+    
+    def fisher_vector_product(self, p, cg_damping=0.1):
+        N = self.sampled_states.shape[0]
+        Nf = tf.cast(N, tf.float32)
+        var_list = self.generator.trainable_weights
+
+        sampled_states = tf.convert_to_tensor(self.sampled_states, dtype=tf.float32)
+        sampled_codes = tf.convert_to_tensor(self.sampled_codes, dtype=tf.float32)
+
+        start = 0
+        tangents = []
+        for v in var_list:
+            size = np.prod(v.shape)
+            param = tf.reshape(p[start:(start+size)], v.shape)
+            tangents.append(param)
+            start += size
+
+        with tf.GradientTape() as grad_tape:
+            actions_mu = self.generator([sampled_states, sampled_codes], training=True)
+            actions_logstd = np.zeros_like(actions_mu.numpy(), dtype=np.float32)
+            kl_firstfixed = gauss_selfKL_firstfixed(actions_mu, actions_logstd) / Nf
+        
+        grads = grad_tape.gradient(kl_firstfixed, var_list)
+        gvp = [tf.reduce_sum(g * t) for (g, t) in zip(grads, tangents)]
+        fvp = flatgrad(gvp, var_list)
+
+        return fvp + p * cg_damping
 
     def __train(self):
         print("Creating dataset...")
@@ -176,6 +205,9 @@ class CircleAgent():
 
         dataset = tf.data.Dataset.from_tensor_slices((sampled_states, sampled_actions, sampled_codes))
         dataset = dataset.batch(batch_size=self.batch)
+
+        # # old actions mu (test for both the same as current actions and the previous policy)
+        old_actions_mu = self.generator([sampled_states, sampled_codes], training=False)
 
         # train discriminator
         for _, (states_batch, actions_batch, _) in enumerate(dataset):
@@ -237,12 +269,20 @@ class CircleAgent():
         thprev = get_flat(self.generator)
 
         # calculate ratio between old and new policy (loss)
-        actions_mu = self.generator([sampled_states, sampled_codes], training=False).numpy()
-        # old actions mu???
-        actions_logstd = np.ones_like(actions_mu)
-        actions_logstd *= self.logstds
+        with tf.GradientTape() as grad_tape:
+            actions_mu = self.generator([sampled_states, sampled_codes], training=True)
+            actions_logstd = old_actions_logstd = np.zeros_like(actions_mu.numpy(), dtype=np.float32)
 
-        log_p_n = gauss_log_prob(actions_mu, actions_logstd, sampled_actions)
+            log_p_n = gauss_log_prob(actions_mu, actions_logstd, sampled_actions)
+            log_oldp_n = gauss_log_prob(old_actions_mu, old_actions_logstd, sampled_actions)
+
+            ratio_n = tf.exp(log_p_n - log_oldp_n)
+            surrogate_loss = -tf.reduce_mean(ratio_n * self.advants)
+
+        policy_gradient = flatgrad(self.generator, surrogate_loss, grad_tape)
+        stepdir = conjugate_gradient(self.fisher_vector_product, -policy_gradient)
+        shs = 0.5 * stepdir.dot(self.fisher_vector_product(stepdir))
+        assert shs > 0
     
     def infogail(self):
         # load data
@@ -251,9 +291,6 @@ class CircleAgent():
         expert_states = np.concatenate(expert_states)
         expert_actions = np.concatenate(expert_actions)
         expert_codes = np.concatenate(expert_codes)
-
-        # log stds of expert actions (probably wrong and unnecessary)
-        self.logstds = np.log(np.std(expert_actions, 0))
 
         # probably place an epoch loop here
 
