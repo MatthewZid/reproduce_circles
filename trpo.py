@@ -25,6 +25,16 @@ def get_flat(model):
     var_list = model.trainable_weights
     return tf.concat([tf.reshape(v, [numel(v)]) for v in var_list], 0)
 
+def set_from_flat(model, theta):
+    var_list = model.trainable_weights
+    shapes = [v.shape for v in var_list]
+    start = 0
+
+    for (shape, v) in zip(shapes, var_list):
+        size = np.prod(shape)
+        v.assign(tf.reshape(theta[start:start + size], shape))
+        start += size
+
 def flatgrad(model, loss, tape):
     var_list = model.trainable_weights
     # grads = tf.gradients(loss, var_list)
@@ -42,13 +52,13 @@ def gauss_KL(mu1, logstd1, mu2, logstd2):
     kl = tf.reduce_sum(logstd2 - logstd1 + (var1 + tf.square(mu1 - mu2))/(2*var2) - 0.5)
     return kl
 
-def linesearch(f, x, fullstep, expected_improve_rate):
+def linesearch(f, x, old_mu, fullstep, expected_improve_rate):
     accept_ratio = .1
     max_backtracks = 10
-    fval = f(x)
+    fval = f(x, old_mu)[0]
     for (_, stepfrac) in enumerate(.5**np.arange(max_backtracks)):
         xnew = x + stepfrac * fullstep
-        newfval = f(xnew)
+        newfval = f(xnew, old_mu)[0]
         actual_improve = fval - newfval
         expected_improve = expected_improve_rate * stepfrac
         ratio = actual_improve / expected_improve
@@ -61,8 +71,9 @@ def conjugate_gradient(f_Ax, b, cg_iters=10, residual_tol=1e-10):
     r = b.copy()
     x = np.zeros_like(b)
     rdotr = r.dot(r)
-    for i in tqdm(range(cg_iters)):
+    for i in range(cg_iters):
         z = f_Ax(p)
+        z = z.numpy()
         v = rdotr / p.dot(z)
         x += v * p
         r -= v * z

@@ -1,4 +1,5 @@
 import os
+from tensorflow.python.eager.backprop import GradientTape
 
 from tensorflow.python.keras.backend import var
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
@@ -21,12 +22,13 @@ from trpo import *
 # tf.config.set_visible_devices(cpu_device[0], 'CPU')
 
 class CircleAgent():
-    def __init__(self, state_dims, action_dims, code_dims, batch_size=32, code_batch=64, sample_size=1500, gamma=0.95, lam=0.97):
+    def __init__(self, state_dims, action_dims, code_dims, batch_size=32, code_batch=64, sample_size=1500, gamma=0.95, lam=0.97, max_kl=0.01):
         self.env = CircleEnv(max_step=256)
         initializer = tf.keras.initializers.HeUniform()
         self.batch = batch_size
         self.gamma = gamma
         self.lam = lam
+        self.max_kl = max_kl
         self.code_batch = code_batch
         self.sample_size = sample_size
         self.state_dims = state_dims
@@ -43,7 +45,6 @@ class CircleAgent():
         self.values = []
         self.advants = []
         self.returns = []
-        self.sampled_mus = []
         self.disc_optimizer = tf.keras.optimizers.RMSprop()
         self.posterior_optimizer = tf.keras.optimizers.Adam()
         self.value_optimizer = tf.keras.optimizers.Adam()
@@ -166,6 +167,28 @@ class CircleAgent():
 
         return loss
     
+    def __generator_loss(self, old_mu):
+        sampled_states = tf.convert_to_tensor(self.sampled_states, dtype=tf.float32)
+        sampled_actions = tf.convert_to_tensor(self.sampled_actions, dtype=tf.float32)
+        sampled_codes = tf.convert_to_tensor(self.sampled_codes, dtype=tf.float32)
+
+        # calculate ratio between old and new policy (loss)
+        with tf.GradientTape() as grad_tape:
+            actions_mu = self.generator([sampled_states, sampled_codes], training=True)
+            actions_logstd = old_actions_logstd = np.zeros_like(actions_mu.numpy(), dtype=np.float32)
+
+            log_p_n = gauss_log_prob(actions_mu, actions_logstd, sampled_actions)
+            log_oldp_n = gauss_log_prob(old_mu, old_actions_logstd, sampled_actions)
+
+            ratio_n = tf.exp(log_p_n - log_oldp_n)
+            surrogate_loss = -tf.reduce_mean(ratio_n * self.advants)
+        
+        return ((surrogate_loss, grad_tape))
+
+    def get_loss(self, theta, old_mu):
+        set_from_flat(self.generator, theta)
+        return self.__generator_loss(old_mu)
+    
     def view_traj(self, traj):
         plt.scatter(traj[:,-2], traj[:,-1], c=['red'], alpha=0.4)
         plt.show()
@@ -186,14 +209,15 @@ class CircleAgent():
             tangents.append(param)
             start += size
 
-        with tf.GradientTape() as grad_tape:
+        with tf.GradientTape() as grad_tape, GradientTape() as tape_gvp:
             actions_mu = self.generator([sampled_states, sampled_codes], training=True)
             actions_logstd = np.zeros_like(actions_mu.numpy(), dtype=np.float32)
             kl_firstfixed = gauss_selfKL_firstfixed(actions_mu, actions_logstd) / Nf
         
-        grads = grad_tape.gradient(kl_firstfixed, var_list)
-        gvp = [tf.reduce_sum(g * t) for (g, t) in zip(grads, tangents)]
-        fvp = flatgrad(gvp, var_list)
+            grads = grad_tape.gradient(kl_firstfixed, var_list)
+            gvp = [tf.reduce_sum(g * t) for (g, t) in zip(grads, tangents)]
+
+        fvp = flatgrad(self.generator, gvp, tape_gvp)
 
         return fvp + p * cg_damping
 
@@ -268,21 +292,19 @@ class CircleAgent():
         # calculate previous theta (θold)
         thprev = get_flat(self.generator)
 
-        # calculate ratio between old and new policy (loss)
-        with tf.GradientTape() as grad_tape:
-            actions_mu = self.generator([sampled_states, sampled_codes], training=True)
-            actions_logstd = old_actions_logstd = np.zeros_like(actions_mu.numpy(), dtype=np.float32)
-
-            log_p_n = gauss_log_prob(actions_mu, actions_logstd, sampled_actions)
-            log_oldp_n = gauss_log_prob(old_actions_mu, old_actions_logstd, sampled_actions)
-
-            ratio_n = tf.exp(log_p_n - log_oldp_n)
-            surrogate_loss = -tf.reduce_mean(ratio_n * self.advants)
+        (surrogate_loss, grad_tape) = self.__generator_loss(old_actions_mu)
 
         policy_gradient = flatgrad(self.generator, surrogate_loss, grad_tape)
-        stepdir = conjugate_gradient(self.fisher_vector_product, -policy_gradient)
+        stepdir = conjugate_gradient(self.fisher_vector_product, -policy_gradient.numpy())
         shs = 0.5 * stepdir.dot(self.fisher_vector_product(stepdir))
         assert shs > 0
+
+        lm = np.sqrt(shs / self.max_kl)
+        fullstep = stepdir / lm
+        neggdotstepdir = -policy_gradient.numpy().dot(stepdir)
+
+        theta = linesearch(self.get_loss, thprev, old_actions_mu, fullstep, neggdotstepdir / lm)
+        set_from_flat(self.generator, theta)
     
     def infogail(self):
         # load data
