@@ -7,6 +7,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Dense, ReLU, Flatten, Add
 from tensorflow.keras.models import Model
+import matplotlib
 import matplotlib.pyplot as plt
 import pickle as pkl
 import numpy as np
@@ -22,9 +23,10 @@ from trpo import *
 # tf.config.set_visible_devices(cpu_device[0], 'CPU')
 
 class CircleAgent():
-    def __init__(self, state_dims, action_dims, code_dims, batch_size=32, code_batch=64, sample_size=1500, gamma=0.95, lam=0.97, max_kl=0.01):
+    def __init__(self, state_dims, action_dims, code_dims, epochs=100, batch_size=32, code_batch=64, sample_size=1500, gamma=0.95, lam=0.97, max_kl=0.01):
         self.env = CircleEnv(max_step=256)
         initializer = tf.keras.initializers.HeUniform()
+        self.epochs = epochs
         self.batch = batch_size
         self.gamma = gamma
         self.lam = lam
@@ -222,7 +224,6 @@ class CircleAgent():
         return fvp + p * cg_damping
 
     def __train(self):
-        print("Creating dataset...")
         sampled_states = tf.convert_to_tensor(self.sampled_states, dtype=tf.float32)
         sampled_actions = tf.convert_to_tensor(self.sampled_actions, dtype=tf.float32)
         sampled_codes = tf.convert_to_tensor(self.sampled_codes, dtype=tf.float32)
@@ -230,7 +231,7 @@ class CircleAgent():
         dataset = tf.data.Dataset.from_tensor_slices((sampled_states, sampled_actions, sampled_codes))
         dataset = dataset.batch(batch_size=self.batch)
 
-        # # old actions mu (test for both the same as current actions and the previous policy)
+        # old actions mu (test for both the same as current actions and the previous policy)
         old_actions_mu = self.generator([sampled_states, sampled_codes], training=False)
 
         # train discriminator
@@ -314,60 +315,74 @@ class CircleAgent():
         expert_actions = np.concatenate(expert_actions)
         expert_codes = np.concatenate(expert_codes)
 
-        # probably place an epoch loop here
+        # colors
+        colors = ['red', 'green', 'blue']
 
-        # Sample a batch of latent codes: ci ∼ p(c)
-        sampled_codes = np.zeros((self.code_batch, self.code_dims))
-        code_ids = np.arange(0,self.code_dims)
-        print("\nGenerating codes...")
-        for i in tqdm.tqdm(range(self.code_batch)):
-            pick = np.random.choice(code_ids, p=code_prob)
-            sampled_codes[i, pick] = 1
-        
-        # Sample trajectories: τi ∼ πθi(ci), with the latent code fixed during each rollout
-        generated_states = []
-        generated_actions = []
-        generated_codes = []
-        print("\nGenerating trajectories...")
-        for i in tqdm.tqdm(range(len(sampled_codes))):
-            trajectory = self.__generate_policy(sampled_codes[i])
-            generated_states.append(trajectory[0])
-            generated_actions.append(trajectory[1])
-            generated_codes.append(trajectory[2])
-            # plt.figure()
-            # plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], c=['red'], alpha=0.4)
-            # plt.savefig("./plots/trajectory_"+str(i), dpi=100)
-            # plt.close()
-        
-        generated_states = np.concatenate(generated_states)
-        generated_actions = np.concatenate(generated_actions)
-        generated_codes = np.concatenate(generated_codes)
+        # random colors instead
+        # colors = []
+        # for _ in range(self.code_dims):
+        #     colors.append('#%06X' % random.randint(0x0, 0xc4b1b1))
 
-        # Sample state-action pairs χi ~ τi and χΕ ~ τΕ with the same batch size
-        print("\nSampling state-action pairs...")
-        generated_idx = np.random.choice(generated_states.shape[0], self.sample_size, replace=False)
-        expert_idx = np.random.choice(expert_states.shape[0], self.sample_size, replace=False)
+        for epoch in tqdm.tqdm(range(self.epochs), desc="Epoch"):
+            # Sample a batch of latent codes: ci ∼ p(c)
+            sampled_codes = np.zeros((self.code_batch, self.code_dims))
+            code_ids = np.arange(0,self.code_dims)
+            for i in range(self.code_batch):
+                pick = np.random.choice(code_ids, p=code_prob)
+                sampled_codes[i, pick] = 1
+            print("\n\nGenerated codes")
+            
+            # Sample trajectories: τi ∼ πθi(ci), with the latent code fixed during each rollout
+            generated_states = []
+            generated_actions = []
+            generated_codes = []
 
-        generated_states = generated_states[generated_idx, :]
-        generated_actions = generated_actions[generated_idx, :]
-        generated_codes = generated_codes[generated_idx, :]
-        sampled_expert_states = expert_states[expert_idx, :]
-        sampled_expert_actions = expert_actions[expert_idx, :]
-        sampled_expert_codes = expert_codes[expert_idx, :]
+            if epoch % 2 == 0: plt.figure()
+            for i in range(len(sampled_codes)):
+                trajectory = self.__generate_policy(sampled_codes[i])
+                generated_states.append(trajectory[0])
+                generated_actions.append(trajectory[1])
+                generated_codes.append(trajectory[2])
+                
+                if epoch % 2 == 0:
+                    argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
+                    plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], c=colors[argcolor], alpha=0.4)
+            
+            if epoch % 2 == 0:
+                plt.savefig("./plots/trajectories_"+str(epoch), dpi=100)
+                plt.close()
+            
+            print("Generated trajectories")
+            
+            generated_states = np.concatenate(generated_states)
+            generated_actions = np.concatenate(generated_actions)
+            generated_codes = np.concatenate(generated_codes)
 
-        sampled_states = np.concatenate([generated_states, sampled_expert_states])
-        sampled_actions = np.concatenate([generated_actions, sampled_expert_actions])
-        sampled_codes = np.concatenate([generated_codes, sampled_expert_codes])
+            # Sample state-action pairs χi ~ τi and χΕ ~ τΕ with the same batch size
+            generated_idx = np.random.choice(generated_states.shape[0], self.sample_size, replace=False)
+            expert_idx = np.random.choice(expert_states.shape[0], self.sample_size, replace=False)
 
-        # shuffle indices
-        idx = np.arange(len(sampled_states))
-        np.random.shuffle(idx)
-        self.sampled_states = sampled_states[idx]
-        self.sampled_actions = sampled_actions[idx]
-        self.sampled_codes = sampled_codes[idx]
+            generated_states = generated_states[generated_idx, :]
+            generated_actions = generated_actions[generated_idx, :]
+            generated_codes = generated_codes[generated_idx, :]
+            sampled_expert_states = expert_states[expert_idx, :]
+            sampled_expert_actions = expert_actions[expert_idx, :]
+            sampled_expert_codes = expert_codes[expert_idx, :]
+            print("Sampled state-action pairs")
 
-        # call train here
-        self.__train()
+            sampled_states = np.concatenate([generated_states, sampled_expert_states])
+            sampled_actions = np.concatenate([generated_actions, sampled_expert_actions])
+            sampled_codes = np.concatenate([generated_codes, sampled_expert_codes])
+
+            # shuffle indices
+            idx = np.arange(len(sampled_states))
+            np.random.shuffle(idx)
+            self.sampled_states = sampled_states[idx]
+            self.sampled_actions = sampled_actions[idx]
+            self.sampled_codes = sampled_codes[idx]
+
+            # call train here
+            self.__train()
 
 # main
 agent = CircleAgent(10, 2, 3)
