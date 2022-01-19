@@ -189,12 +189,18 @@ class CircleAgent():
         return ((surrogate_loss, grad_tape))
 
     def get_loss(self, theta, old_mu):
-        set_from_flat(self.generator, theta)
+        # set_from_flat(self.generator, theta)
+        var_list = self.generator.trainable_weights
+        shapes = [v.shape for v in var_list]
+        start = 0
+
+        weight_idx = 0
+        for shape in shapes:
+            size = np.prod(shape)
+            self.generator.trainable_weights[weight_idx].assign(tf.reshape(theta[start:start + size], shape))
+            weight_idx += 1
+            start += size
         return self.__generator_loss(old_mu)
-    
-    def view_traj(self, traj):
-        plt.scatter(traj[:,-2], traj[:,-1], c=['red'], alpha=0.4)
-        plt.show()
     
     def fisher_vector_product(self, p, cg_damping=0.1):
         N = self.sampled_states.shape[0]
@@ -223,6 +229,12 @@ class CircleAgent():
         fvp = flatgrad(self.generator, gvp, tape_gvp)
 
         return fvp + p * cg_damping
+    
+    def __saveplot(self, x, y, epoch, element='element'):
+        plt.figure()
+        plt.scatter(x, y, alpha=0.4)
+        plt.savefig('./plots/'+element+'_'+str(epoch), dpi=100)
+        plt.close()
 
     def __train(self, epoch):
         sampled_states = tf.convert_to_tensor(self.sampled_states, dtype=tf.float32)
@@ -293,10 +305,6 @@ class CircleAgent():
         
         # calculate previous theta (θold)
         thprev = get_flat(self.generator)
-        plt.figure()
-        plt.scatter(thprev, thprev, alpha=0.4)
-        plt.savefig('./plots/grad_'+str(epoch), dpi=100)
-        plt.close()
 
         (surrogate_loss, grad_tape) = self.__generator_loss(old_actions_mu)
 
