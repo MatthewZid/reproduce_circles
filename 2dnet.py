@@ -130,7 +130,7 @@ class CircleAgent():
             if norm > 1e-8:
                 action = np.array([action[0] / norm, action[1] / norm], dtype=np.float32)
             else:
-                action = np.array([0.0,0.0], dtype=np.float32)
+                action = np.array([1.0,0.0], dtype=np.float32)
 
             # current_state = (state_obsrv[-2], state_obsrv[-1])
             s_traj.append(state_obsrv)
@@ -149,9 +149,10 @@ class CircleAgent():
         return (s_traj, a_traj, c_traj)
     
     def __disc_loss(self, score):
-        cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
+        # cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
         
-        loss = cross_entropy(tf.ones_like(score), score)
+        # loss = cross_entropy(tf.ones_like(score), score)
+        loss = tf.reduce_mean(score * np.ones_like(score))
 
         return loss
 
@@ -223,7 +224,7 @@ class CircleAgent():
 
         return fvp + p * cg_damping
 
-    def __train(self):
+    def __train(self, epoch):
         sampled_states = tf.convert_to_tensor(self.sampled_states, dtype=tf.float32)
         sampled_actions = tf.convert_to_tensor(self.sampled_actions, dtype=tf.float32)
         sampled_codes = tf.convert_to_tensor(self.sampled_codes, dtype=tf.float32)
@@ -292,6 +293,10 @@ class CircleAgent():
         
         # calculate previous theta (θold)
         thprev = get_flat(self.generator)
+        plt.figure()
+        plt.scatter(thprev, thprev, alpha=0.4)
+        plt.savefig('./plots/grad_'+str(epoch), dpi=100)
+        plt.close()
 
         (surrogate_loss, grad_tape) = self.__generator_loss(old_actions_mu)
 
@@ -305,7 +310,17 @@ class CircleAgent():
         neggdotstepdir = -policy_gradient.numpy().dot(stepdir)
 
         theta = linesearch(self.get_loss, thprev, old_actions_mu, fullstep, neggdotstepdir / lm)
-        set_from_flat(self.generator, theta)
+        # set_from_flat(self.generator, theta)
+        var_list = self.generator.trainable_weights
+        shapes = [v.shape for v in var_list]
+        start = 0
+
+        weight_idx = 0
+        for shape in shapes:
+            size = np.prod(shape)
+            self.generator.trainable_weights[weight_idx].assign(tf.reshape(theta[start:start + size], shape))
+            weight_idx += 1
+            start += size
     
     def infogail(self):
         # load data
@@ -337,20 +352,22 @@ class CircleAgent():
             generated_actions = []
             generated_codes = []
 
-            if epoch % 2 == 0: plt.figure()
+            # if epoch % 2 == 0:
+            #     plt.figure()
+                
             for i in range(len(sampled_codes)):
                 trajectory = self.__generate_policy(sampled_codes[i])
                 generated_states.append(trajectory[0])
                 generated_actions.append(trajectory[1])
                 generated_codes.append(trajectory[2])
                 
-                if epoch % 2 == 0:
-                    argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
-                    plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], c=colors[argcolor], alpha=0.4)
+                # if epoch % 2 == 0:
+                #     argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
+                #     plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], c=colors[argcolor], alpha=0.4)
             
-            if epoch % 2 == 0:
-                plt.savefig("./plots/trajectories_"+str(epoch), dpi=100)
-                plt.close()
+            # if epoch % 2 == 0:
+            #     plt.savefig("./plots/trajectories_"+str(epoch), dpi=100)
+            #     plt.close()
             
             print("Generated trajectories")
             
@@ -382,7 +399,7 @@ class CircleAgent():
             self.sampled_codes = sampled_codes[idx]
 
             # call train here
-            self.__train()
+            self.__train(epoch)
 
 # main
 agent = CircleAgent(10, 2, 3)
