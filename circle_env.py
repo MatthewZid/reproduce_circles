@@ -33,6 +33,7 @@ class CircleEnv():
 
 		self.p[0] += action[0]
 		self.p[1] += action[1]
+		# self.p = np.clip(np.array(self.p), -1, 1).tolist() # clip position to stay in desired boundaries
 		self.xs.append(self.p[0])
 		self.ys.append(self.p[1])
 		self.n_step += 1

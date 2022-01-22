@@ -48,7 +48,7 @@ for i in range(len(r)):
     
     s_traj[i] = np.array(s_traj[i], dtype=np.float32)
     a_traj[i] = np.array(a_traj[i], dtype=np.float32)
-    c_traj[i] = np.array(c_traj[i], dtype=np.int)
+    c_traj[i] = np.array(c_traj[i], dtype=int)
     code_prob.append(n[i] / total_points)
 
 pkl.dump((s_traj, a_traj, c_traj, code_prob), open("./expert_traj.pkl", "wb"))
