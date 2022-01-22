@@ -1,7 +1,4 @@
 import os
-from tensorflow.python.eager.backprop import GradientTape
-
-from tensorflow.python.keras.backend import var
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 
 import tensorflow as tf
@@ -23,10 +20,10 @@ from trpo import *
 # tf.config.set_visible_devices(cpu_device[0], 'CPU')
 
 class CircleAgent():
-    def __init__(self, state_dims, action_dims, code_dims, epochs=100, batch_size=32, code_batch=64, sample_size=1500, gamma=0.95, lam=0.97, max_kl=0.01):
+    def __init__(self, state_dims, action_dims, code_dims, episodes=100, batch_size=32, code_batch=64, sample_size=1500, gamma=0.95, lam=0.97, max_kl=0.01):
         self.env = CircleEnv(max_step=256)
-        initializer = tf.keras.initializers.HeUniform()
-        self.epochs = epochs
+        initializer = tf.keras.initializers.HeNormal()
+        self.episodes = episodes
         self.batch = batch_size
         self.gamma = gamma
         self.lam = lam
@@ -114,6 +111,8 @@ class CircleAgent():
         a_traj = []
         c_traj = []
 
+        logstd = np.array([0.0,0.0])
+
         # generate actions for every current state
         state_obsrv = self.env.reset() # reset environment state
         code_tf = tf.constant(code)
@@ -123,18 +122,27 @@ class CircleAgent():
             # 1. generate actions with generator
             state_tf = tf.constant(state_obsrv)
             state_tf = tf.expand_dims(state_tf, axis=0)
-            action = self.generator([state_tf, code_tf], training=False)
-            action = tf.squeeze(action).numpy()
-            norm  = math.sqrt(action[0]*action[0] + action[1]*action[1])
-
-            if norm > 1e-8:
-                action = np.array([action[0] / norm, action[1] / norm], dtype=np.float32)
-            else:
-                action = np.array([1.0,0.0], dtype=np.float32)
+            action_mu = self.generator([state_tf, code_tf], training=False)
+            action_mu = tf.squeeze(action_mu).numpy()
+            
+            action_std = np.exp(logstd)
+            # sample action
+            # z = np.random.normal(0,1)
+            zx = np.random.normal(0,0.4)
+            zy = np.random.normal(0,0.4)
+            # zx = np.random.uniform(-1, 1)
+            # zy = np.random.uniform(-1, 1)
+            z = np.array([zx, zy])
+            action = action_mu + action_std * z
+            # or...
+            # action_x = np.random.normal(action_mu[0], action_std[0])
+            # action_y = np.random.normal(action_mu[1], action_std[1])
+            # action = np.array([action_x, action_y])
+            action = np.clip(action, -1, 1)
 
             # current_state = (state_obsrv[-2], state_obsrv[-1])
-            s_traj.append(state_obsrv)
-            a_traj.append(action)
+            s_traj.append(np.copy(state_obsrv))
+            a_traj.append(np.copy(action))
             c_traj.append(code)
 
             # 2. environment step
@@ -218,7 +226,7 @@ class CircleAgent():
             tangents.append(param)
             start += size
 
-        with tf.GradientTape() as grad_tape, GradientTape() as tape_gvp:
+        with tf.GradientTape() as grad_tape, tf.GradientTape() as tape_gvp:
             actions_mu = self.generator([sampled_states, sampled_codes], training=True)
             actions_logstd = np.zeros_like(actions_mu.numpy(), dtype=np.float32)
             kl_firstfixed = gauss_selfKL_firstfixed(actions_mu, actions_logstd) / Nf
@@ -230,13 +238,13 @@ class CircleAgent():
 
         return fvp + p * cg_damping
     
-    def __saveplot(self, x, y, epoch, element='element'):
+    def __saveplot(self, x, y, episode, element='element'):
         plt.figure()
         plt.scatter(x, y, alpha=0.4)
-        plt.savefig('./plots/'+element+'_'+str(epoch), dpi=100)
+        plt.savefig('./plots/'+element+'_'+str(episode), dpi=100)
         plt.close()
 
-    def __train(self, epoch):
+    def __train(self, episode):
         sampled_states = tf.convert_to_tensor(self.sampled_states, dtype=tf.float32)
         sampled_actions = tf.convert_to_tensor(self.sampled_actions, dtype=tf.float32)
         sampled_codes = tf.convert_to_tensor(self.sampled_codes, dtype=tf.float32)
@@ -346,7 +354,7 @@ class CircleAgent():
         # for _ in range(self.code_dims):
         #     colors.append('#%06X' % random.randint(0x0, 0xc4b1b1))
 
-        for epoch in tqdm.tqdm(range(self.epochs), desc="Epoch"):
+        for episode in tqdm.tqdm(range(self.episodes), desc="Episode"):
             # Sample a batch of latent codes: ci ∼ p(c)
             sampled_codes = np.zeros((self.code_batch, self.code_dims))
             code_ids = np.arange(0,self.code_dims)
@@ -360,8 +368,8 @@ class CircleAgent():
             generated_actions = []
             generated_codes = []
 
-            # if epoch % 2 == 0:
-            #     plt.figure()
+            if episode % 2 == 0:
+                plt.figure()
                 
             for i in range(len(sampled_codes)):
                 trajectory = self.__generate_policy(sampled_codes[i])
@@ -369,13 +377,13 @@ class CircleAgent():
                 generated_actions.append(trajectory[1])
                 generated_codes.append(trajectory[2])
                 
-                # if epoch % 2 == 0:
-                #     argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
-                #     plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], c=colors[argcolor], alpha=0.4)
+                if episode % 2 == 0:
+                    argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
+                    plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], c=colors[argcolor], alpha=0.4)
             
-            # if epoch % 2 == 0:
-            #     plt.savefig("./plots/trajectories_"+str(epoch), dpi=100)
-            #     plt.close()
+            if episode % 2 == 0:
+                plt.savefig("./plots/trajectories_"+str(episode), dpi=100)
+                plt.close()
             
             print("Generated trajectories")
             
@@ -407,7 +415,7 @@ class CircleAgent():
             self.sampled_codes = sampled_codes[idx]
 
             # call train here
-            self.__train(epoch)
+            self.__train(episode)
 
 # main
 agent = CircleAgent(10, 2, 3)
