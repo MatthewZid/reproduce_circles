@@ -111,15 +111,15 @@ disc_optimizer = tf.keras.optimizers.RMSprop()
 post_optimizer = tf.keras.optimizers.Adam()
 mse = tf.keras.losses.MeanSquaredError()
 cross_entropy = tf.keras.losses.CategoricalCrossentropy()
-actions_logstd = np.zeros((BATCH_SIZE, expert_actions.shape[1]), dtype=np.float32)
+# actions_logstd = np.zeros((BATCH_SIZE, expert_actions.shape[1]), dtype=np.float32)
 
 for _, (states_batch, actions_batch, codes_batch) in enumerate(train_data):
     with tf.GradientTape() as gen_tape:
         actions_mu = generator([states_batch, codes_batch], training=True)
-        z = tf.random.normal([BATCH_SIZE,2], 0, 0.4)
-        actions = actions_mu + tf.math.exp(actions_logstd) * z
-        actions = np.clip(actions, -1, 1)
-        gen_loss = mse(actions_batch, actions)
+        # z = tf.random.normal([BATCH_SIZE,2], 0, 0.4)
+        # actions = actions_mu + tf.math.exp(actions_logstd) * z
+        # actions = np.clip(actions, -1, 1)
+        gen_loss = mse(actions_batch, actions_mu)
     
     policy_gradients = gen_tape.gradient(gen_loss, generator.trainable_weights)
     gen_optimizer.apply_gradients(zip(policy_gradients, generator.trainable_weights))
@@ -138,4 +138,7 @@ for _, (states_batch, actions_batch, codes_batch) in enumerate(train_data):
     post_gradients = post_tape.gradient(post_loss, posterior.trainable_weights)
     post_optimizer.apply_gradients(zip(post_gradients, posterior.trainable_weights))
 
-    # value net training???
+generator.save_weights('./saved_models/generator.h5')
+discriminator.save_weights('./saved_models/discriminator.h5')
+posterior.save_weights('./saved_models/posterior.h5')
+print('\nModels saved!')
