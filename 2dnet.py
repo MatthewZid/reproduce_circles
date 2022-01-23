@@ -40,10 +40,9 @@ class CircleAgent():
         self.sampled_states = []
         self.sampled_actions = []
         self.sampled_codes = []
-        self.sampled_rewards = []
         self.values = []
         self.advants = []
-        self.returns = []
+        self.trajectories = []
         self.disc_optimizer = tf.keras.optimizers.RMSprop()
         self.posterior_optimizer = tf.keras.optimizers.Adam()
         self.value_optimizer = tf.keras.optimizers.Adam()
@@ -280,23 +279,23 @@ class CircleAgent():
         reward_d = self.discriminator([sampled_states, sampled_actions], training=False).numpy()
         reward_p = self.posterior([sampled_states, sampled_actions], training=False).numpy()
 
-        self.sampled_rewards = np.ones(self.sampled_states.shape[0]) * 2 \
+        sampled_rewards = np.ones(self.sampled_states.shape[0]) * 2 \
             + reward_d.flatten() * 0.1 \
             + np.sum(np.log(reward_p, out=np.zeros_like(reward_p), where=(reward_p!=0)) * self.sampled_codes, axis=1)
         
         # calculate values, advants and returns
         self.values = self.value_net([sampled_states, sampled_codes], training=False).numpy().flatten()
         baselines = np.append(self.values, 0 if self.values.shape[0] == 100 else self.values[-1])
-        deltas = self.sampled_rewards + self.gamma * baselines[1:] - baselines[:-1]
+        deltas = sampled_rewards + self.gamma * baselines[1:] - baselines[:-1]
         self.advants = discount(deltas, self.gamma * self.lam)
-        self.returns = discount(self.sampled_rewards, self.gamma)
+        returns = discount(sampled_rewards, self.gamma)
 
         # standardize advantages
         self.advants /= (self.advants.std() + 1e-8)
 
         # train value net for next iter
         returns_old = self.value_net([sampled_states, sampled_codes], training=False).numpy().flatten()
-        rets = self.returns * 0.1 + returns_old * 0.9
+        rets = returns * 0.1 + returns_old * 0.9
 
         rets = tf.convert_to_tensor(rets, dtype=tf.float32)
         dataset = tf.data.Dataset.from_tensor_slices((sampled_states, sampled_actions, sampled_codes, rets))
@@ -359,23 +358,30 @@ class CircleAgent():
             sampled_codes = np.zeros((self.code_batch, self.code_dims))
             code_ids = np.arange(0,self.code_dims)
             for i in range(self.code_batch):
-                pick = np.random.choice(code_ids, p=code_prob)
+                # pick = np.random.choice(code_ids, p=code_prob)
+                pick = np.random.choice(self.code_dims, 1)[0]
                 sampled_codes[i, pick] = 1
             print("\n\nGenerated codes")
             
             # Sample trajectories: τi ∼ πθi(ci), with the latent code fixed during each rollout
-            generated_states = []
-            generated_actions = []
-            generated_codes = []
+            # generated_states = []
+            # generated_actions = []
+            # generated_codes = []
+            self.trajectories = []
 
             if episode % 2 == 0:
                 plt.figure()
                 
             for i in range(len(sampled_codes)):
+                trajectory_dict = {}
                 trajectory = self.__generate_policy(sampled_codes[i])
-                generated_states.append(trajectory[0])
-                generated_actions.append(trajectory[1])
-                generated_codes.append(trajectory[2])
+                # generated_states.append(trajectory[0])
+                # generated_actions.append(trajectory[1])
+                # generated_codes.append(trajectory[2])
+                trajectory_dict['states'] = np.copy(trajectory[0])
+                trajectory_dict['actions'] = np.copy(trajectory[1])
+                trajectory_dict['codes'] = np.copy(trajectory[2])
+                self.trajectories.append(trajectory_dict)
                 
                 if episode % 2 == 0:
                     argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
@@ -387,9 +393,12 @@ class CircleAgent():
             
             print("Generated trajectories")
             
-            generated_states = np.concatenate(generated_states)
-            generated_actions = np.concatenate(generated_actions)
-            generated_codes = np.concatenate(generated_codes)
+            # generated_states = np.concatenate(generated_states)
+            # generated_actions = np.concatenate(generated_actions)
+            # generated_codes = np.concatenate(generated_codes)
+            generated_states = np.concatenate([traj['states'] for traj in self.trajectories])
+            generated_actions = np.concatenate([traj['actions'] for traj in self.trajectories])
+            generated_codes = np.concatenate([traj['codes'] for traj in self.trajectories])
 
             # Sample state-action pairs χi ~ τi and χΕ ~ τΕ with the same batch size
             generated_idx = np.random.choice(generated_states.shape[0], self.sample_size, replace=False)
