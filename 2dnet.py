@@ -37,12 +37,11 @@ class CircleAgent():
         self.discriminator = self.create_discriminator(initializer)
         self.posterior = self.create_posterior(code_dims, initializer)
         self.value_net = self.create_valuenet(initializer)
-        self.sampled_states = []
-        self.sampled_actions = []
-        self.sampled_codes = []
-        self.values = []
-        self.advants = []
+        self.expert_states = []
+        self.expert_actions = []
+        self.expert_codes = []
         self.trajectories = []
+        self.advants_n = []
         self.disc_optimizer = tf.keras.optimizers.RMSprop()
         self.posterior_optimizer = tf.keras.optimizers.Adam()
         self.value_optimizer = tf.keras.optimizers.Adam()
@@ -159,7 +158,7 @@ class CircleAgent():
         # cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
         
         # loss = cross_entropy(tf.ones_like(score), score)
-        loss = tf.reduce_mean(score * np.ones_like(score))
+        loss = tf.reduce_mean(score * np.ones(self.batch))
 
         return loss
 
@@ -191,7 +190,7 @@ class CircleAgent():
             log_oldp_n = gauss_log_prob(old_mu, old_actions_logstd, sampled_actions)
 
             ratio_n = tf.exp(log_p_n - log_oldp_n)
-            surrogate_loss = -tf.reduce_mean(ratio_n * self.advants)
+            surrogate_loss = -tf.reduce_mean(ratio_n * self.advants_n)
         
         return ((surrogate_loss, grad_tape))
 
@@ -244,27 +243,58 @@ class CircleAgent():
         plt.close()
 
     def __train(self, episode):
-        sampled_states = tf.convert_to_tensor(self.sampled_states, dtype=tf.float32)
-        sampled_actions = tf.convert_to_tensor(self.sampled_actions, dtype=tf.float32)
-        sampled_codes = tf.convert_to_tensor(self.sampled_codes, dtype=tf.float32)
+        # old actions mu (test for both the same as current actions and the previous policy)
+        for traj in self.trajectories:
+            traj['old_actions_mus'] = self.generator([traj['states'], traj['codes']], training=False)
 
-        dataset = tf.data.Dataset.from_tensor_slices((sampled_states, sampled_actions, sampled_codes))
+        generated_states = np.concatenate([traj['states'] for traj in self.trajectories])
+        generated_actions = np.concatenate([traj['actions'] for traj in self.trajectories])
+        generated_codes = np.concatenate([traj['codes'] for traj in self.trajectories])
+        generated_mus = np.concatenate([traj['old_actions_mus'] for traj in self.trajectories])
+
+        # Sample state-action pairs χi ~ τi and χΕ ~ τΕ with the same batch size
+        generated_idx = np.random.choice(generated_states.shape[0], self.expert_states.shape[0], replace=False)
+        sampled_generated_states = generated_states[generated_idx, :]
+        sampled_generated_actions = generated_actions[generated_idx, :]
+
+        expert_idx = np.arange(self.expert_states.shape[0])
+        np.random.shuffle(expert_idx)
+        sampled_expert_states = self.expert_states[expert_idx, :]
+        sampled_expert_actions = self.expert_actions[expert_idx, :]
+
+        sampled_generated_states = tf.convert_to_tensor(sampled_generated_states, dtype=tf.float32)
+        sampled_generated_actions = tf.convert_to_tensor(sampled_generated_actions, dtype=tf.float32)
+        sampled_expert_states = tf.convert_to_tensor(sampled_expert_states, dtype=tf.float32)
+        sampled_expert_actions = tf.convert_to_tensor(sampled_expert_actions, dtype=tf.float32)
+
+        dataset = tf.data.Dataset.from_tensor_slices((sampled_generated_states, sampled_generated_actions, sampled_expert_states, sampled_expert_actions))
         dataset = dataset.batch(batch_size=self.batch)
 
-        # old actions mu (test for both the same as current actions and the previous policy)
-        old_actions_mu = self.generator([sampled_states, sampled_codes], training=False)
-
         # train discriminator
-        for _, (states_batch, actions_batch, _) in enumerate(dataset):
+        for _, (generated_states_batch, generated_actions_batch, expert_states_batch, expert_actions_batch) in enumerate(dataset):
             with tf.GradientTape() as disc_tape:
-                score = self.discriminator([states_batch, actions_batch], training=True)
+                score1 = self.discriminator([generated_states_batch, generated_actions_batch], training=True)
+                score2 = self.discriminator([expert_states_batch, expert_actions_batch], training=True)
+                score2 = -score2
+                total_score = tf.math.add(score1, score2)
 
-                disc_loss = self.__disc_loss(score)
+                disc_loss = self.__disc_loss(total_score)
             
             gradients_of_discriminator = disc_tape.gradient(disc_loss, self.discriminator.trainable_weights)
             self.disc_optimizer.apply_gradients(zip(gradients_of_discriminator, self.discriminator.trainable_weights))
 
         # train posterior
+        generated_idx = np.arange(generated_states.shape[0])
+        np.random.shuffle(generated_idx)
+        sampled_generated_states = generated_states[generated_idx, :]
+        sampled_generated_actions = generated_actions[generated_idx, :]
+        sampled_generated_codes = generated_codes[generated_idx, :]
+        sampled_generated_states = tf.convert_to_tensor(sampled_generated_states, dtype=tf.float32)
+        sampled_generated_actions = tf.convert_to_tensor(sampled_generated_actions, dtype=tf.float32)
+        sampled_generated_codes = tf.convert_to_tensor(sampled_generated_codes, dtype=tf.float32)
+        dataset = tf.data.Dataset.from_tensor_slices((sampled_generated_states, sampled_generated_actions, sampled_generated_codes))
+        dataset = dataset.batch(batch_size=self.batch)
+
         for _, (states_batch, actions_batch, codes_batch) in enumerate(dataset):
             with tf.GradientTape() as post_tape:
                 prob = self.posterior([states_batch, actions_batch], training=True)
@@ -274,24 +304,29 @@ class CircleAgent():
             gradients_of_posterior = post_tape.gradient(post_loss, self.posterior.trainable_weights)
             self.posterior_optimizer.apply_gradients(zip(gradients_of_posterior, self.posterior.trainable_weights))
 
+        # TODO: Everything below here needs correction!!
         # train generator (TRPO)
         # calculate rewards from discriminator and posterior
-        reward_d = self.discriminator([sampled_states, sampled_actions], training=False).numpy()
-        reward_p = self.posterior([sampled_states, sampled_actions], training=False).numpy()
+        returns = []
+        for traj in self.trajectories:
+            reward_d = self.discriminator([traj['states'], traj['actions']], training=False).numpy()
+            reward_p = self.posterior([traj['states'], traj['actions']], training=False).numpy()
 
-        sampled_rewards = np.ones(self.sampled_states.shape[0]) * 2 \
-            + reward_d.flatten() * 0.1 \
-            + np.sum(np.log(reward_p, out=np.zeros_like(reward_p), where=(reward_p!=0)) * self.sampled_codes, axis=1)
+            traj['rewards'] = np.ones(traj['states'].shape[0]) * 2 \
+                + reward_d.flatten() * 0.1 \
+                + np.sum(np.log(reward_p, out=np.zeros_like(reward_p), where=(reward_p!=0)) * traj['codes'], axis=1)
+            
+            # calculate values, advants and returns
+            values = self.value_net([traj['states'], traj['codes']], training=False).numpy().flatten()
+            baselines = np.append(values, 0 if values.shape[0] == 100 else values[-1])
+            deltas = traj['rewards'] + self.gamma * baselines[1:] - baselines[:-1]
+            traj['advants'] = discount(deltas, self.gamma * self.lam)
+            returns = discount(traj['rewards'], self.gamma)
         
-        # calculate values, advants and returns
-        self.values = self.value_net([sampled_states, sampled_codes], training=False).numpy().flatten()
-        baselines = np.append(self.values, 0 if self.values.shape[0] == 100 else self.values[-1])
-        deltas = sampled_rewards + self.gamma * baselines[1:] - baselines[:-1]
-        self.advants = discount(deltas, self.gamma * self.lam)
-        returns = discount(sampled_rewards, self.gamma)
+        self.advants_n = np.concatenate([traj['advants'] for traj in self.trajectories])
 
         # standardize advantages
-        self.advants /= (self.advants.std() + 1e-8)
+        self.advants_n /= (self.advants_n.std() + 1e-8)
 
         # train value net for next iter
         returns_old = self.value_net([sampled_states, sampled_codes], training=False).numpy().flatten()
@@ -341,9 +376,9 @@ class CircleAgent():
         # load data
         expert_states, expert_actions, expert_codes, code_prob = pkl.load(open("expert_traj.pkl", "rb"))
 
-        expert_states = np.concatenate(expert_states)
-        expert_actions = np.concatenate(expert_actions)
-        expert_codes = np.concatenate(expert_codes)
+        self.expert_states = np.concatenate(expert_states)
+        self.expert_actions = np.concatenate(expert_actions)
+        self.expert_codes = np.concatenate(expert_codes)
 
         # colors
         colors = ['red', 'green', 'blue']
@@ -361,67 +396,28 @@ class CircleAgent():
                 # pick = np.random.choice(code_ids, p=code_prob)
                 pick = np.random.choice(self.code_dims, 1)[0]
                 sampled_codes[i, pick] = 1
-            print("\n\nGenerated codes")
             
             # Sample trajectories: τi ∼ πθi(ci), with the latent code fixed during each rollout
-            # generated_states = []
-            # generated_actions = []
-            # generated_codes = []
             self.trajectories = []
 
-            if episode % 2 == 0:
-                plt.figure()
+            # if episode % 2 == 0:
+            #     plt.figure()
                 
             for i in range(len(sampled_codes)):
                 trajectory_dict = {}
                 trajectory = self.__generate_policy(sampled_codes[i])
-                # generated_states.append(trajectory[0])
-                # generated_actions.append(trajectory[1])
-                # generated_codes.append(trajectory[2])
                 trajectory_dict['states'] = np.copy(trajectory[0])
                 trajectory_dict['actions'] = np.copy(trajectory[1])
                 trajectory_dict['codes'] = np.copy(trajectory[2])
                 self.trajectories.append(trajectory_dict)
                 
-                if episode % 2 == 0:
-                    argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
-                    plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], c=colors[argcolor], alpha=0.4)
+                # if episode % 2 == 0:
+                #     argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
+                #     plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], c=colors[argcolor], alpha=0.4)
             
-            if episode % 2 == 0:
-                plt.savefig("./plots/trajectories_"+str(episode), dpi=100)
-                plt.close()
-            
-            print("Generated trajectories")
-            
-            # generated_states = np.concatenate(generated_states)
-            # generated_actions = np.concatenate(generated_actions)
-            # generated_codes = np.concatenate(generated_codes)
-            generated_states = np.concatenate([traj['states'] for traj in self.trajectories])
-            generated_actions = np.concatenate([traj['actions'] for traj in self.trajectories])
-            generated_codes = np.concatenate([traj['codes'] for traj in self.trajectories])
-
-            # Sample state-action pairs χi ~ τi and χΕ ~ τΕ with the same batch size
-            generated_idx = np.random.choice(generated_states.shape[0], self.sample_size, replace=False)
-            expert_idx = np.random.choice(expert_states.shape[0], self.sample_size, replace=False)
-
-            generated_states = generated_states[generated_idx, :]
-            generated_actions = generated_actions[generated_idx, :]
-            generated_codes = generated_codes[generated_idx, :]
-            sampled_expert_states = expert_states[expert_idx, :]
-            sampled_expert_actions = expert_actions[expert_idx, :]
-            sampled_expert_codes = expert_codes[expert_idx, :]
-            print("Sampled state-action pairs")
-
-            sampled_states = np.concatenate([generated_states, sampled_expert_states])
-            sampled_actions = np.concatenate([generated_actions, sampled_expert_actions])
-            sampled_codes = np.concatenate([generated_codes, sampled_expert_codes])
-
-            # shuffle indices
-            idx = np.arange(len(sampled_states))
-            np.random.shuffle(idx)
-            self.sampled_states = sampled_states[idx]
-            self.sampled_actions = sampled_actions[idx]
-            self.sampled_codes = sampled_codes[idx]
+            # if episode % 2 == 0:
+            #     plt.savefig("./plots/trajectories_"+str(episode), dpi=100)
+            #     plt.close()
 
             # call train here
             self.__train(episode)
