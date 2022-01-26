@@ -4,16 +4,13 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Dense, ReLU, Flatten, Add
 from tensorflow.keras.models import Model
-import matplotlib
 import matplotlib.pyplot as plt
 import pickle as pkl
 import numpy as np
 import random
 
-from tensorflow.python.keras.engine import training
 from circle_env import CircleEnv
 from tqdm import tqdm
-import math
 from trpo import *
 
 # cpu_device = tf.config.get_visible_devices()
@@ -41,7 +38,6 @@ class CircleAgent():
         self.expert_actions = []
         self.expert_codes = []
         self.trajectories = []
-        self.advants_n = []
         self.disc_optimizer = tf.keras.optimizers.RMSprop()
         self.posterior_optimizer = tf.keras.optimizers.Adam()
         self.value_optimizer = tf.keras.optimizers.Adam()
@@ -176,25 +172,21 @@ class CircleAgent():
 
         return loss
     
-    def __generator_loss(self, old_mu):
-        sampled_states = tf.convert_to_tensor(self.sampled_states, dtype=tf.float32)
-        sampled_actions = tf.convert_to_tensor(self.sampled_actions, dtype=tf.float32)
-        sampled_codes = tf.convert_to_tensor(self.sampled_codes, dtype=tf.float32)
-
+    def __generator_loss(self, feed):
         # calculate ratio between old and new policy (loss)
         with tf.GradientTape() as grad_tape:
-            actions_mu = self.generator([sampled_states, sampled_codes], training=True)
+            actions_mu = self.generator([feed['states'], feed['codes']], training=True)
             actions_logstd = old_actions_logstd = np.zeros_like(actions_mu.numpy(), dtype=np.float32)
 
-            log_p_n = gauss_log_prob(actions_mu, actions_logstd, sampled_actions)
-            log_oldp_n = gauss_log_prob(old_mu, old_actions_logstd, sampled_actions)
+            log_p_n = gauss_log_prob(actions_mu, actions_logstd, feed['actions'])
+            log_oldp_n = gauss_log_prob(feed['old_action_mus'], old_actions_logstd, feed['actions'])
 
             ratio_n = tf.exp(log_p_n - log_oldp_n)
-            surrogate_loss = -tf.reduce_mean(ratio_n * self.advants_n)
+            surrogate_loss = -tf.reduce_mean(ratio_n * feed['advants'])
         
         return ((surrogate_loss, grad_tape))
 
-    def get_loss(self, theta, old_mu):
+    def get_loss(self, theta, feed):
         # set_from_flat(self.generator, theta)
         var_list = self.generator.trainable_weights
         shapes = [v.shape for v in var_list]
@@ -206,15 +198,15 @@ class CircleAgent():
             self.generator.trainable_weights[weight_idx].assign(tf.reshape(theta[start:start + size], shape))
             weight_idx += 1
             start += size
-        return self.__generator_loss(old_mu)
+        return self.__generator_loss(feed)
     
-    def fisher_vector_product(self, p, cg_damping=0.1):
-        N = self.sampled_states.shape[0]
+    def fisher_vector_product(self, p, feed, cg_damping=0.1):
+        N = feed['states'].shape[0]
         Nf = tf.cast(N, tf.float32)
         var_list = self.generator.trainable_weights
 
-        sampled_states = tf.convert_to_tensor(self.sampled_states, dtype=tf.float32)
-        sampled_codes = tf.convert_to_tensor(self.sampled_codes, dtype=tf.float32)
+        sampled_states = tf.convert_to_tensor(feed['states'], dtype=tf.float32)
+        sampled_codes = tf.convert_to_tensor(feed['codes'], dtype=tf.float32)
 
         start = 0
         tangents = []
@@ -245,12 +237,12 @@ class CircleAgent():
     def __train(self, episode):
         # old actions mu (test for both the same as current actions and the previous policy)
         for traj in self.trajectories:
-            traj['old_actions_mus'] = self.generator([traj['states'], traj['codes']], training=False)
+            traj['old_action_mus'] = self.generator([traj['states'], traj['codes']], training=False)
 
         generated_states = np.concatenate([traj['states'] for traj in self.trajectories])
         generated_actions = np.concatenate([traj['actions'] for traj in self.trajectories])
         generated_codes = np.concatenate([traj['codes'] for traj in self.trajectories])
-        generated_mus = np.concatenate([traj['old_actions_mus'] for traj in self.trajectories])
+        generated_mus = np.concatenate([traj['old_action_mus'] for traj in self.trajectories])
 
         # Sample state-action pairs χi ~ τi and χΕ ~ τΕ with the same batch size
         generated_idx = np.random.choice(generated_states.shape[0], self.expert_states.shape[0], replace=False)
@@ -304,10 +296,8 @@ class CircleAgent():
             gradients_of_posterior = post_tape.gradient(post_loss, self.posterior.trainable_weights)
             self.posterior_optimizer.apply_gradients(zip(gradients_of_posterior, self.posterior.trainable_weights))
 
-        # TODO: Everything below here needs correction!!
         # train generator (TRPO)
         # calculate rewards from discriminator and posterior
-        returns = []
         for traj in self.trajectories:
             reward_d = self.discriminator([traj['states'], traj['actions']], training=False).numpy()
             reward_p = self.posterior([traj['states'], traj['actions']], training=False).numpy()
@@ -321,22 +311,36 @@ class CircleAgent():
             baselines = np.append(values, 0 if values.shape[0] == 100 else values[-1])
             deltas = traj['rewards'] + self.gamma * baselines[1:] - baselines[:-1]
             traj['advants'] = discount(deltas, self.gamma * self.lam)
-            returns = discount(traj['rewards'], self.gamma)
+            traj['returns'] = discount(traj['rewards'], self.gamma)
         
-        self.advants_n = np.concatenate([traj['advants'] for traj in self.trajectories])
+        advants = np.concatenate([traj['advants'] for traj in self.trajectories])
 
         # standardize advantages
-        self.advants_n /= (self.advants_n.std() + 1e-8)
+        advants /= (advants.std() + 1e-8)
 
         # train value net for next iter
-        returns_old = self.value_net([sampled_states, sampled_codes], training=False).numpy().flatten()
-        rets = returns * 0.1 + returns_old * 0.9
+        returns = np.concatenate([traj['returns'] for traj in self.trajectories])
+        rets = []
+        if episode != 0:
+            returns_old = np.concatenate([self.value_net([traj['states'], traj['codes']]) for traj in self.trajectories])
+            rets = returns * 0.1 + returns_old * 0.9
+        else: rets = np.copy(returns)
 
-        rets = tf.convert_to_tensor(rets, dtype=tf.float32)
-        dataset = tf.data.Dataset.from_tensor_slices((sampled_states, sampled_actions, sampled_codes, rets))
+        # rets = tf.convert_to_tensor(rets, dtype=tf.float32)
+        # dataset = tf.data.Dataset.from_tensor_slices((sampled_states, sampled_actions, sampled_codes, rets))
+        # dataset = dataset.batch(batch_size=self.batch)
+        generated_idx = np.arange(generated_states.shape[0])
+        np.random.shuffle(generated_idx)
+        sampled_generated_states = generated_states[generated_idx, :]
+        sampled_generated_codes = generated_codes[generated_idx, :]
+        sampled_returns = rets[generated_idx]
+        sampled_generated_states = tf.convert_to_tensor(sampled_generated_states, dtype=tf.float32)
+        sampled_generated_codes = tf.convert_to_tensor(sampled_generated_codes, dtype=tf.float32)
+        sampled_returns = tf.convert_to_tensor(sampled_returns, dtype=tf.float32)
+        dataset = tf.data.Dataset.from_tensor_slices((sampled_generated_states, sampled_generated_codes, sampled_returns))
         dataset = dataset.batch(batch_size=self.batch)
 
-        for _, (states_batch, _, codes_batch, returns_batch) in enumerate(dataset):
+        for _, (states_batch, codes_batch, returns_batch) in enumerate(dataset):
             with tf.GradientTape() as value_tape:
                 value_pred = self.value_net([states_batch, codes_batch], training=True)
 
@@ -348,18 +352,26 @@ class CircleAgent():
         # calculate previous theta (θold)
         thprev = get_flat(self.generator)
 
-        (surrogate_loss, grad_tape) = self.__generator_loss(old_actions_mu)
+        feed = {
+            'states': generated_states,
+            'actions': generated_actions,
+            'codes': generated_codes,
+            'advants': advants,
+            'old_action_mus': generated_mus
+        }
+
+        (surrogate_loss, grad_tape) = self.__generator_loss(feed)
 
         policy_gradient = flatgrad(self.generator, surrogate_loss, grad_tape)
-        stepdir = conjugate_gradient(self.fisher_vector_product, -policy_gradient.numpy())
-        shs = 0.5 * stepdir.dot(self.fisher_vector_product(stepdir))
+        stepdir = conjugate_gradient(self.fisher_vector_product, feed, -policy_gradient.numpy())
+        shs = 0.5 * stepdir.dot(self.fisher_vector_product(stepdir, feed))
         assert shs > 0
 
         lm = np.sqrt(shs / self.max_kl)
         fullstep = stepdir / lm
         neggdotstepdir = -policy_gradient.numpy().dot(stepdir)
 
-        theta = linesearch(self.get_loss, thprev, old_actions_mu, fullstep, neggdotstepdir / lm)
+        theta = linesearch(self.get_loss, thprev, feed, fullstep, neggdotstepdir / lm)
         # set_from_flat(self.generator, theta)
         var_list = self.generator.trainable_weights
         shapes = [v.shape for v in var_list]
@@ -391,7 +403,7 @@ class CircleAgent():
         for episode in tqdm.tqdm(range(self.episodes), desc="Episode"):
             # Sample a batch of latent codes: ci ∼ p(c)
             sampled_codes = np.zeros((self.code_batch, self.code_dims))
-            code_ids = np.arange(0,self.code_dims)
+            # code_ids = np.arange(0,self.code_dims)
             for i in range(self.code_batch):
                 # pick = np.random.choice(code_ids, p=code_prob)
                 pick = np.random.choice(self.code_dims, 1)[0]
@@ -400,8 +412,8 @@ class CircleAgent():
             # Sample trajectories: τi ∼ πθi(ci), with the latent code fixed during each rollout
             self.trajectories = []
 
-            # if episode % 2 == 0:
-            #     plt.figure()
+            if episode % 2 == 0:
+                plt.figure()
                 
             for i in range(len(sampled_codes)):
                 trajectory_dict = {}
@@ -411,13 +423,13 @@ class CircleAgent():
                 trajectory_dict['codes'] = np.copy(trajectory[2])
                 self.trajectories.append(trajectory_dict)
                 
-                # if episode % 2 == 0:
-                #     argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
-                #     plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], c=colors[argcolor], alpha=0.4)
+                if episode % 2 == 0:
+                    argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
+                    plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], c=colors[argcolor], alpha=0.4)
             
-            # if episode % 2 == 0:
-            #     plt.savefig("./plots/trajectories_"+str(episode), dpi=100)
-            #     plt.close()
+            if episode % 2 == 0:
+                plt.savefig("./plots/trajectories_"+str(episode), dpi=100)
+                plt.close()
 
             # call train here
             self.__train(episode)

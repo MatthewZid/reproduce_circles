@@ -52,13 +52,13 @@ def gauss_KL(mu1, logstd1, mu2, logstd2):
     kl = tf.reduce_sum(logstd2 - logstd1 + (var1 + tf.square(mu1 - mu2))/(2*var2) - 0.5)
     return kl
 
-def linesearch(f, x, old_mu, fullstep, expected_improve_rate):
+def linesearch(f, x, feed, fullstep, expected_improve_rate):
     accept_ratio = .1
     max_backtracks = 10
-    fval = f(x, old_mu)[0]
+    fval = f(x, feed)[0]
     for (_, stepfrac) in enumerate(.5**np.arange(max_backtracks)):
         xnew = x + stepfrac * fullstep
-        newfval = f(xnew, old_mu)[0]
+        newfval = f(xnew, feed)[0]
         actual_improve = fval - newfval
         expected_improve = expected_improve_rate * stepfrac
         ratio = actual_improve / expected_improve
@@ -66,13 +66,13 @@ def linesearch(f, x, old_mu, fullstep, expected_improve_rate):
             return xnew
     return x
 
-def conjugate_gradient(f_Ax, b, cg_iters=10, residual_tol=1e-10):
+def conjugate_gradient(f_Ax, feed, b, cg_iters=10, residual_tol=1e-10):
     p = b.copy()
     r = b.copy()
     x = np.zeros_like(b)
     rdotr = r.dot(r)
     for i in range(cg_iters):
-        z = f_Ax(p)
+        z = f_Ax(p, feed)
         z = z.numpy()
         v = rdotr / p.dot(z)
         x += v * p
