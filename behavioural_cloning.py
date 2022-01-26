@@ -6,13 +6,14 @@ from tensorflow.keras.layers import Input, Dense, ReLU, Add
 from tensorflow.keras.models import Model
 import numpy as np
 import pickle as pkl
+import matplotlib.pyplot as plt
 from trpo import *
+from tqdm import trange
 
-BATCH_SIZE = 128
+BATCH_SIZE = 32
 
 def create_generator(state_dims, code_dims, initializer):
     states = Input(shape=state_dims)
-    # x = Flatten()(states)
     x = Dense(128, kernel_initializer=initializer)(states)
     x = ReLU()(x)
     x = Dense(128, kernel_initializer=initializer)(x)
@@ -23,48 +24,6 @@ def create_generator(state_dims, code_dims, initializer):
     actions = Dense(2, activation='tanh')(h)
 
     model = Model(inputs=[states,codes], outputs=actions)
-    return model
-
-def create_discriminator(state_dims, action_dims, initializer):
-    states = Input(shape=state_dims)
-    actions = Input(shape=action_dims)
-    merged = tf.concat([states,actions], 1)
-    # x = Flatten()(merged)
-    x = Dense(128, kernel_initializer=initializer)(merged)
-    x = ReLU()(x)
-    x = Dense(128, kernel_initializer=initializer)(x)
-    x = ReLU()(x)
-    score = Dense(1)(x)
-
-    model = Model(inputs=[states, actions], outputs=score)
-    return model
-
-def create_posterior(state_dims, action_dims, code_dims, initializer):
-    states = Input(shape=state_dims)
-    actions = Input(shape=action_dims)
-    merged = tf.concat([states,actions], 1)
-    # x = Flatten()(merged)
-    x = Dense(128, kernel_initializer=initializer)(merged)
-    x = ReLU()(x)
-    x = Dense(128, kernel_initializer=initializer)(x)
-    x = ReLU()(x)
-    x = Dense(code_dims)(x)
-    output = tf.keras.activations.softmax(x)
-
-    model = Model(inputs=[states, actions], outputs=output)
-    return model
-
-def create_valuenet(state_dims, code_dims, initializer):
-    states = Input(shape=state_dims)
-    codes = Input(shape=code_dims)
-    merged = tf.concat([states,codes], 1)
-    x = Dense(256, kernel_initializer=initializer)(merged)
-    x = ReLU()(x)
-    x = Dense(128, kernel_initializer=initializer)(x)
-    x = ReLU()(x)
-    output = Dense(1)(x)
-
-    model = Model(inputs=[states, codes], outputs=output)
     return model
 
 # load data
@@ -99,12 +58,12 @@ val_codes = tf.convert_to_tensor(val_codes, dtype=tf.float32)
 train_data = tf.data.Dataset.from_tensor_slices((train_states, train_actions, train_codes))
 train_data = train_data.batch(batch_size=BATCH_SIZE)
 
+val_data = tf.data.Dataset.from_tensor_slices((val_states, val_actions, val_codes))
+val_data = val_data.batch(batch_size=BATCH_SIZE)
+
 # train
 initializer = tf.keras.initializers.HeNormal()
 generator = create_generator(10, 3, initializer)
-discriminator = create_discriminator(10, 2, initializer)
-posterior = create_posterior(10, 2, 3, initializer)
-valuenet = create_valuenet(10, 3, initializer)
 
 gen_optimizer = tf.keras.optimizers.SGD(learning_rate=1e-3)
 disc_optimizer = tf.keras.optimizers.RMSprop()
@@ -113,32 +72,44 @@ mse = tf.keras.losses.MeanSquaredError()
 cross_entropy = tf.keras.losses.CategoricalCrossentropy()
 # actions_logstd = np.zeros((BATCH_SIZE, expert_actions.shape[1]), dtype=np.float32)
 
-for _, (states_batch, actions_batch, codes_batch) in enumerate(train_data):
-    with tf.GradientTape() as gen_tape:
-        actions_mu = generator([states_batch, codes_batch], training=True)
-        # z = tf.random.normal([BATCH_SIZE,2], 0, 0.4)
-        # actions = actions_mu + tf.math.exp(actions_logstd) * z
-        # actions = np.clip(actions, -1, 1)
+epochs = 20
+result_train = []
+result_val = []
+for epoch in trange(epochs, desc='Epoch'):
+    loss = 0.0
+    for _, (states_batch, actions_batch, codes_batch) in enumerate(train_data):
+        with tf.GradientTape() as gen_tape:
+            actions_mu = generator([states_batch, codes_batch], training=True)
+            # z = tf.random.normal([BATCH_SIZE,2], 0, 0.4)
+            # actions = actions_mu + tf.math.exp(actions_logstd) * z
+            # actions = np.clip(actions, -1, 1)
+            gen_loss = mse(actions_batch, actions_mu)
+        
+        policy_gradients = gen_tape.gradient(gen_loss, generator.trainable_weights)
+        gen_optimizer.apply_gradients(zip(policy_gradients, generator.trainable_weights))
+
+        loss += tf.get_static_value(gen_loss) * states_batch.shape[0]
+    
+    epoch_loss = loss / sum([el[0].shape[0] for el in list(train_data.as_numpy_iterator())])
+    result_train.append(epoch_loss)
+
+    loss = 0.0
+    for _, (states_batch, actions_batch, codes_batch) in enumerate(val_data):
+        actions_mu = generator([states_batch, codes_batch], training=False)
         gen_loss = mse(actions_batch, actions_mu)
+        loss += tf.get_static_value(gen_loss) * states_batch.shape[0]
     
-    policy_gradients = gen_tape.gradient(gen_loss, generator.trainable_weights)
-    gen_optimizer.apply_gradients(zip(policy_gradients, generator.trainable_weights))
+    epoch_loss = loss / sum([el[0].shape[0] for el in list(val_data.as_numpy_iterator())])
+    result_val.append(epoch_loss)
 
-    with tf.GradientTape() as disc_tape:
-        vals = discriminator([states_batch, actions_batch], training=True)
-        disc_loss = mse(tf.ones_like(vals), vals)
-    
-    disc_gradients = disc_tape.gradient(disc_loss, discriminator.trainable_weights)
-    disc_optimizer.apply_gradients(zip(disc_gradients, discriminator.trainable_weights))
-
-    with tf.GradientTape() as post_tape:
-        probs = posterior([states_batch, actions_batch], training=True)
-        post_loss = cross_entropy(codes_batch, probs)
-    
-    post_gradients = post_tape.gradient(post_loss, posterior.trainable_weights)
-    post_optimizer.apply_gradients(zip(post_gradients, posterior.trainable_weights))
+epoch_space = np.arange(1, len(result_train)+1)
+plt.figure()
+plt.title('Behaviour Cloning')
+plt.plot(epoch_space, result_train)
+plt.plot(epoch_space, result_val)
+plt.legend(['train loss', 'validation loss'], loc="upper right")
+plt.savefig('./plots/behaviour_cloning', dpi=100)
+plt.close()
 
 generator.save_weights('./saved_models/generator.h5')
-discriminator.save_weights('./saved_models/discriminator.h5')
-posterior.save_weights('./saved_models/posterior.h5')
 print('\nModels saved!')
