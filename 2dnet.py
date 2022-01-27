@@ -297,6 +297,11 @@ class CircleAgent():
             gradients_of_discriminator = disc_tape.gradient(disc_loss, self.discriminator.trainable_weights)
             self.disc_optimizer.apply_gradients(zip(gradients_of_discriminator, self.discriminator.trainable_weights))
 
+            for l in self.discriminator.layers:
+                weights = l.get_weights()
+                weights = [np.clip(w, -0.01, 0.01) for w in weights]
+                l.set_weights(weights)
+
         # train posterior
         generated_idx = np.arange(generated_states.shape[0])
         np.random.shuffle(generated_idx)
@@ -452,8 +457,8 @@ class CircleAgent():
             # Sample trajectories: τi ∼ πθi(ci), with the latent code fixed during each rollout
             self.trajectories = []
 
-            if episode % 2 == 0:
-                plt.figure()
+            # if episode % 2 == 0:
+            #     plt.figure()
                 
             for i in range(len(sampled_codes)):
                 trajectory_dict = {}
@@ -463,13 +468,13 @@ class CircleAgent():
                 trajectory_dict['codes'] = np.copy(trajectory[2])
                 self.trajectories.append(trajectory_dict)
                 
-                if episode % 2 == 0:
-                    argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
-                    plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], c=colors[argcolor], alpha=0.4)
+                # if episode % 2 == 0:
+                #     argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
+                #     plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], c=colors[argcolor], alpha=0.4)
             
-            if episode % 2 == 0:
-                plt.savefig("./plots/trajectories_"+str(episode), dpi=100)
-                plt.close()
+            # if episode % 2 == 0:
+            #     plt.savefig("./plots/trajectories_"+str(episode), dpi=100)
+            #     plt.close()
 
             # call train here
             self.__train(episode)
