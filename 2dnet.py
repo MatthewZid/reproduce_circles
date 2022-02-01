@@ -11,16 +11,16 @@ import numpy as np
 import random
 
 from circle_env import CircleEnv
-from tqdm import tqdm
+from tqdm import trange
 from trpo import *
 
 # cpu_device = tf.config.get_visible_devices()
 # tf.config.set_visible_devices(cpu_device[0], 'CPU')
 
 class CircleAgent():
-    def __init__(self, state_dims, action_dims, code_dims, episodes=100, batch_size=128, code_batch=64, sample_size=1500, gamma=0.95, lam=0.97, max_kl=0.01):
+    def __init__(self, state_dims, action_dims, code_dims, episodes=1000, batch_size=2048, code_batch=128, sample_size=1500, gamma=0.95, lam=0.97, max_kl=0.01):
         self.env = CircleEnv(max_step=256)
-        initializer = tf.keras.initializers.HeNormal()
+        # initializer = tf.keras.initializers.HeNormal()
         self.episodes = episodes
         self.batch = batch_size
         self.gamma = gamma
@@ -31,11 +31,11 @@ class CircleAgent():
         self.state_dims = state_dims
         self.action_dims = action_dims
         self.code_dims = code_dims
-        self.generator = self.create_generator(initializer)
+        self.generator = self.create_generator()
         self.generator.load_weights('./saved_models/generator.h5')
-        self.discriminator = self.create_discriminator(initializer)
-        self.posterior = self.create_posterior(code_dims, initializer)
-        self.value_net = self.create_valuenet(initializer)
+        self.discriminator = self.create_discriminator()
+        self.posterior = self.create_posterior(code_dims)
+        self.value_net = self.create_valuenet()
         self.expert_states = []
         self.expert_actions = []
         self.expert_codes = []
@@ -45,14 +45,14 @@ class CircleAgent():
         self.value_optimizer = tf.keras.optimizers.Adam()
         print('\nAgent created')
 
-    def create_generator(self, initializer):
+    def create_generator(self):
         states = Input(shape=self.state_dims)
         # x = Flatten()(states)
-        x = Dense(128, kernel_initializer=initializer)(states)
+        x = Dense(128)(states)
         x = ReLU()(x)
-        x = Dense(128, kernel_initializer=initializer)(x)
+        x = Dense(128)(x)
         codes = Input(shape=self.code_dims)
-        c = Dense(128, kernel_initializer=initializer)(codes)
+        c = Dense(128)(codes)
         h = Add()([x, c])
         h = ReLU()(h)
         actions = Dense(2, activation='tanh')(h)
@@ -60,28 +60,28 @@ class CircleAgent():
         model = Model(inputs=[states,codes], outputs=actions)
         return model
 
-    def create_discriminator(self, initializer):
+    def create_discriminator(self):
         states = Input(shape=self.state_dims)
         actions = Input(shape=self.action_dims)
         merged = tf.concat([states,actions], 1)
         # x = Flatten()(merged)
-        x = Dense(128, kernel_initializer=initializer)(merged)
+        x = Dense(128)(merged)
         x = ReLU()(x)
-        x = Dense(128, kernel_initializer=initializer)(x)
+        x = Dense(128)(x)
         x = ReLU()(x)
         score = Dense(1)(x)
 
         model = Model(inputs=[states, actions], outputs=score)
         return model
     
-    def create_posterior(self, code_dims, initializer):
+    def create_posterior(self, code_dims):
         states = Input(shape=self.state_dims)
         actions = Input(shape=self.action_dims)
         merged = tf.concat([states,actions], 1)
         # x = Flatten()(merged)
-        x = Dense(128, kernel_initializer=initializer)(merged)
+        x = Dense(128)(merged)
         x = ReLU()(x)
-        x = Dense(128, kernel_initializer=initializer)(x)
+        x = Dense(128)(x)
         x = ReLU()(x)
         x = Dense(code_dims)(x)
         output = tf.keras.activations.softmax(x)
@@ -89,13 +89,13 @@ class CircleAgent():
         model = Model(inputs=[states, actions], outputs=output)
         return model
 
-    def create_valuenet(self, initializer):
+    def create_valuenet(self):
         states = Input(shape=self.state_dims)
         codes = Input(shape=self.code_dims)
         merged = tf.concat([states,codes], 1)
-        x = Dense(256, kernel_initializer=initializer)(merged)
+        x = Dense(256)(merged)
         x = ReLU()(x)
-        x = Dense(128, kernel_initializer=initializer)(x)
+        x = Dense(128)(x)
         x = ReLU()(x)
         output = Dense(1)(x)
 
@@ -404,6 +404,8 @@ class CircleAgent():
             (surrogate_loss, grad_tape) = self.__generator_loss(feed)
 
             policy_gradient = flatgrad(self.generator, surrogate_loss, grad_tape)
+            nans = tf.math.is_nan(policy_gradient)
+            if(tf.where(nans).shape[0] != 0): print('NAN!!!!!!!!!!!')
             stepdir = conjugate_gradient(self.fisher_vector_product, feed, -policy_gradient.numpy())
             shs = 0.5 * stepdir.dot(self.fisher_vector_product(stepdir, feed))
             assert shs > 0
@@ -445,7 +447,7 @@ class CircleAgent():
         # for _ in range(self.code_dims):
         #     colors.append('#%06X' % random.randint(0x0, 0xc4b1b1))
 
-        for episode in tqdm.tqdm(range(self.episodes), desc="Episode"):
+        for episode in trange(self.episodes, desc="Episode"):
             # Sample a batch of latent codes: ci ∼ p(c)
             sampled_codes = np.zeros((self.code_batch, self.code_dims))
             # code_ids = np.arange(0,self.code_dims)
@@ -457,9 +459,7 @@ class CircleAgent():
             # Sample trajectories: τi ∼ πθi(ci), with the latent code fixed during each rollout
             self.trajectories = []
 
-            # if episode % 2 == 0:
-            #     plt.figure()
-                
+            plt.figure()
             for i in range(len(sampled_codes)):
                 trajectory_dict = {}
                 trajectory = self.__generate_policy(sampled_codes[i])
@@ -468,13 +468,11 @@ class CircleAgent():
                 trajectory_dict['codes'] = np.copy(trajectory[2])
                 self.trajectories.append(trajectory_dict)
                 
-                # if episode % 2 == 0:
-                #     argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
-                #     plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], c=colors[argcolor], alpha=0.4)
+                argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
+                plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], c=colors[argcolor], alpha=0.4)
             
-            # if episode % 2 == 0:
-            #     plt.savefig("./plots/trajectories_"+str(episode), dpi=100)
-            #     plt.close()
+            plt.savefig("./plots/trajectories_"+str(episode), dpi=100)
+            plt.close()
 
             # call train here
             self.__train(episode)
