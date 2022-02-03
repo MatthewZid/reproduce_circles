@@ -67,7 +67,7 @@ def main():
 				one_hot_code[i] = 1
 				c_traj[idx].append(one_hot_code)
 
-				state, reward, done, info = env.step(action)
+				state, done = env.step(action)
 
 				if done:
 					s_traj[idx] = np.array(s_traj[idx], dtype=np.float32)

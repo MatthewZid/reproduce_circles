@@ -7,10 +7,9 @@ class CircleEnv():
 	#-------------------------
 	# Constructor
 	#-------------------------
-	def __init__(self, speed=0.02, sigma1=0.01, sigma2=0.005, max_step=512, starting_point=(0.0,0.0)):
+	def __init__(self, speed=0.02, sigma1=0.01, sigma2=0.005, max_step=512):
 		self.state    = np.zeros((5, 2), dtype=np.float32)
 		self.max_step = max_step
-		self.start = starting_point
 		self.n_step   = 1
 		self.sigma1   = sigma1
 		self.sigma2   = sigma2
@@ -56,21 +55,17 @@ class CircleEnv():
 		else:
 			done = False
 
-		return np.copy(self.state.flatten()), reward, done, 0
-
-	def set_start(self, point):
-		self.start[0] = point[0]
-		self.start[1] = point[1]
+		return np.copy(self.state.flatten()), done
 
 
 	#-------------------------
 	# Reset
 	#-------------------------
-	def reset(self):
+	def reset(self, start=(0.0,0.0)):
 		# self.p[0]   = self.sigma1 * np.random.randn()
 		# self.p[1]   = self.sigma1 * np.random.randn()
-		self.p[0]   = self.start[0]
-		self.p[1]   = self.start[1]
+		self.p[0]   = start[0]
+		self.p[1]   = start[1]
 		self.xs     = [self.p[0]]
 		self.ys     = [self.p[1]]
 		self.n_step = 1
