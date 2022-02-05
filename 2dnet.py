@@ -18,15 +18,14 @@ from trpo import *
 # tf.config.set_visible_devices(cpu_device[0], 'CPU')
 
 class CircleAgent():
-    def __init__(self, state_dims, action_dims, code_dims, episodes=1000, batch_size=2048, code_batch=128, sample_size=1500, gamma=0.95, lam=0.97, max_kl=0.01):
-        self.env = CircleEnv(max_step=256)
+    def __init__(self, state_dims, action_dims, code_dims, episodes=1000, batch_size=2048, code_batch=512, gamma=0.95, lam=0.97, max_kl=0.01):
+        self.env = CircleEnv()
         self.episodes = episodes
         self.batch = batch_size
         self.gamma = gamma
         self.lam = lam
         self.max_kl = max_kl
         self.code_batch = code_batch
-        self.sample_size = sample_size
         self.state_dims = state_dims
         self.action_dims = action_dims
         self.code_dims = code_dims
@@ -251,15 +250,22 @@ class CircleAgent():
         generated_oldactions = np.concatenate([traj['old_actions'] for traj in self.trajectories])
 
         # Sample state-action pairs χi ~ τi and χΕ ~ τΕ with the same batch size
-        generated_idx = np.random.choice(generated_states.shape[0], self.expert_states.shape[0], replace=False)
-        sampled_generated_states = generated_states[generated_idx, :]
-        sampled_generated_actions = generated_actions[generated_idx, :]
-
         expert_idx = np.arange(self.expert_states.shape[0])
         np.random.shuffle(expert_idx)
         sampled_expert_states = self.expert_states[expert_idx, :]
         sampled_expert_actions = self.expert_actions[expert_idx, :]
 
+        sampled_generated_states = []
+        sampled_generated_actions = []
+        generated_idx = []
+        if generated_states.shape[0] > self.expert_states.shape[0]:
+            generated_idx = np.random.choice(generated_states.shape[0], self.expert_states.shape[0], replace=False)
+        else:
+            generated_idx = np.arange(generated_states.shape[0])
+            np.random.shuffle(generated_idx)
+
+        sampled_generated_states = generated_states[generated_idx, :]
+        sampled_generated_actions = generated_actions[generated_idx, :]
         sampled_generated_states = tf.convert_to_tensor(sampled_generated_states, dtype=tf.float32)
         sampled_generated_actions = tf.convert_to_tensor(sampled_generated_actions, dtype=tf.float32)
         sampled_expert_states = tf.convert_to_tensor(sampled_expert_states, dtype=tf.float32)
@@ -318,9 +324,9 @@ class CircleAgent():
                 + np.sum(np.log(reward_p, out=np.zeros_like(reward_p), where=(reward_p!=0)) * traj['codes'], axis=1)
             
             # calculate values, advants and returns
-            values = self.value_net([traj['states'], traj['codes']], training=False).numpy().flatten()
+            values = self.value_net([traj['states'], traj['codes']], training=False).numpy().flatten() # Value function
             baselines = np.append(values, 0 if values.shape[0] == 100 else values[-1])
-            deltas = traj['rewards'] + self.gamma * baselines[1:] - baselines[:-1]
+            deltas = traj['rewards'] + self.gamma * baselines[1:] - baselines[:-1] # Advantage(st,at) = rt+1 + γ*V(st+1) - V(st)
             traj['advants'] = discount(deltas, self.gamma * self.lam)
             traj['returns'] = discount(traj['rewards'], self.gamma)
         
@@ -331,17 +337,15 @@ class CircleAgent():
 
         # train value net for next iter
         returns = np.concatenate([traj['returns'] for traj in self.trajectories])
-        rets = []
         if episode != 0:
-            returns_old = np.concatenate([self.value_net([traj['states'], traj['codes']]) for traj in self.trajectories])
-            rets = returns * 0.1 + returns_old * 0.9
-        else: rets = returns
+            returns_old = np.concatenate([self.value_net([traj['states'], traj['codes']]).numpy().flatten() for traj in self.trajectories])
+            returns = returns * 0.1 + returns_old * 0.9
 
         generated_idx = np.arange(generated_states.shape[0])
         np.random.shuffle(generated_idx)
         sampled_generated_states = generated_states[generated_idx, :]
         sampled_generated_codes = generated_codes[generated_idx, :]
-        sampled_returns = rets[generated_idx]
+        sampled_returns = returns[generated_idx]
         sampled_generated_states = tf.convert_to_tensor(sampled_generated_states, dtype=tf.float32)
         sampled_generated_codes = tf.convert_to_tensor(sampled_generated_codes, dtype=tf.float32)
         sampled_returns = tf.convert_to_tensor(sampled_returns, dtype=tf.float32)
