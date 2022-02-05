@@ -84,3 +84,15 @@ def conjugate_gradient(f_Ax, feed, b, cg_iters=10, residual_tol=1e-10):
         if rdotr < residual_tol:
             break
     return x
+
+class ReplayBuffer():
+    def __init__(self, buffer_size=1024):
+        self.buffer_size = buffer_size
+        self.buffer = []
+    
+    def add(self, trajectory):
+        if (len(self.buffer) + 1) < self.buffer_size:
+            self.buffer.append(trajectory)
+        else:
+            self.buffer.pop(0)
+            self.buffer.append(trajectory)
