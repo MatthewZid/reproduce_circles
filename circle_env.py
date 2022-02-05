@@ -50,7 +50,8 @@ class CircleEnv():
 
 		reward = 0.0
 
-		if self.n_step >= 129 or abs(self.p[0]) >= 1 or abs(self.p[1]) >= 1:
+		# if self.n_step >= 129 or abs(self.p[0]) >= 1 or abs(self.p[1]) >= 1:
+		if self.n_step >= 129:
 			done = True
 		else:
 			done = False
