@@ -3,7 +3,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 # os.environ["CUDA_VISIBLE_DEVICES"]="-1"
 
 import tensorflow as tf
-from tensorflow.keras.layers import Input, Dense, ReLU, Flatten, Add
+from tensorflow.keras.layers import Input, Dense, ReLU, LeakyReLU, Flatten, Add
 from tensorflow.keras.models import Model
 import matplotlib.pyplot as plt
 import pickle as pkl
@@ -20,7 +20,6 @@ from trpo import *
 class CircleAgent():
     def __init__(self, state_dims, action_dims, code_dims, episodes=1000, batch_size=2048, code_batch=128, sample_size=1500, gamma=0.95, lam=0.97, max_kl=0.01):
         self.env = CircleEnv(max_step=256)
-        # initializer = tf.keras.initializers.HeNormal()
         self.episodes = episodes
         self.batch = batch_size
         self.gamma = gamma
@@ -46,15 +45,17 @@ class CircleAgent():
         print('\nAgent created')
 
     def create_generator(self):
+        initializer = tf.keras.initializers.RandomNormal()
         states = Input(shape=self.state_dims)
-        # x = Flatten()(states)
-        x = Dense(128)(states)
-        x = ReLU()(x)
-        x = Dense(128)(x)
+        x = Dense(128, kernel_initializer=initializer)(states)
+        x = LeakyReLU()(x)
+        x = Dense(128, kernel_initializer=initializer)(x)
+        x = LeakyReLU()(x)
         codes = Input(shape=self.code_dims)
-        c = Dense(128)(codes)
+        c = Dense(128, kernel_initializer=initializer)(codes)
+        c = LeakyReLU()(c)
         h = Add()([x, c])
-        h = ReLU()(h)
+        # h = tf.concat([x,c], 1)
         actions = Dense(2, activation='tanh')(h)
 
         model = Model(inputs=[states,codes], outputs=actions)
@@ -144,9 +145,6 @@ class CircleAgent():
         return (s_traj, a_traj, c_traj)
     
     def __disc_loss(self, score):
-        # cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
-        
-        # loss = cross_entropy(tf.ones_like(score), score)
         loss = tf.reduce_mean(score * np.ones(self.batch))
 
         return loss
@@ -242,20 +240,6 @@ class CircleAgent():
             states[:,i] = (states[:,i] - states[:,i].mean()) / states[:,i].std()
 
     def __train(self, episode):
-        # standardize generated
-        # colors = ['red', 'green', 'blue']
-        # if episode % 2 == 0:
-        #     plt.figure()
-        # for traj in self.trajectories:
-        #     self.standardize(traj['states'])
-        #     if episode % 2 == 0:
-        #         argcolor = np.where(traj['codes'][0] == 1)[0][0] # find the index of code from one-hot
-        #         plt.scatter(traj['states'][:,-2], traj['states'][:,-1], c=colors[argcolor], alpha=0.4)
-        
-        # if episode % 2 == 0:
-        #     plt.savefig("./plots/trajectories_"+str(episode), dpi=100)
-        #     plt.close()
-
         # old actions mu (test for both the same as current actions and the previous policy)
         for traj in self.trajectories:
             # traj['old_action_mus'] = self.generator([traj['states'], traj['codes']], training=False)
@@ -429,11 +413,7 @@ class CircleAgent():
     
     def infogail(self):
         # load data
-        expert_states, expert_actions, expert_codes, code_prob = pkl.load(open("expert_traj.pkl", "rb"))
-
-        # standardize expert
-        # for i in range(len(expert_states)):
-        #     self.standardize(expert_states[i])
+        expert_states, expert_actions, expert_codes = pkl.load(open("expert_traj.pkl", "rb"))
 
         self.expert_states = np.concatenate(expert_states)
         self.expert_actions = np.concatenate(expert_actions)
@@ -450,9 +430,7 @@ class CircleAgent():
         for episode in trange(self.episodes, desc="Episode"):
             # Sample a batch of latent codes: ci ∼ p(c)
             sampled_codes = np.zeros((self.code_batch, self.code_dims))
-            # code_ids = np.arange(0,self.code_dims)
             for i in range(self.code_batch):
-                # pick = np.random.choice(code_ids, p=code_prob)
                 pick = np.random.choice(self.code_dims, 1)[0]
                 sampled_codes[i, pick] = 1
             
@@ -469,7 +447,7 @@ class CircleAgent():
                 self.trajectories.append(trajectory_dict)
                 
                 argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
-                plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], c=colors[argcolor], alpha=0.4)
+                plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], s=4, c=colors[argcolor], alpha=0.4)
             
             plt.savefig("./plots/trajectories_"+str(episode), dpi=100)
             plt.close()
