@@ -18,7 +18,7 @@ from trpo import *
 # tf.config.set_visible_devices(cpu_device[0], 'CPU')
 
 class CircleAgent():
-    def __init__(self, state_dims, action_dims, code_dims, episodes=1000, batch_size=2048, code_batch=512, gamma=0.95, lam=0.97, max_kl=0.01):
+    def __init__(self, state_dims, action_dims, code_dims, episodes=2000, batch_size=2048, code_batch=512, gamma=0.95, lam=0.97, max_kl=0.01):
         self.env = CircleEnv()
         self.episodes = episodes
         self.batch = batch_size
