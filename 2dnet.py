@@ -1,10 +1,10 @@
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
-# os.environ["CUDA_VISIBLE_DEVICES"]="-1"
+os.environ["CUDA_VISIBLE_DEVICES"]="-1"
 
 import tensorflow as tf
-from tensorflow.keras.layers import Input, Dense, ReLU, LeakyReLU, Flatten, Add
-from tensorflow.keras.models import Model
+from tensorflow.python.keras.layers import Input, Dense, ReLU, LeakyReLU, Flatten, Add
+from tensorflow.python.keras.models import Model
 import matplotlib.pyplot as plt
 import pickle as pkl
 import numpy as np
@@ -16,6 +16,10 @@ from trpo import *
 
 # cpu_device = tf.config.get_visible_devices()
 # tf.config.set_visible_devices(cpu_device[0], 'CPU')
+
+tf.config.threading.set_inter_op_parallelism_threads(16) 
+tf.config.threading.set_intra_op_parallelism_threads(16)
+tf.config.set_soft_device_placement(True)
 
 class CircleAgent():
     def __init__(self, state_dims, action_dims, code_dims, episodes=2000, batch_size=2048, code_batch=512, gamma=0.95, lam=0.97, max_kl=0.01):
@@ -31,7 +35,10 @@ class CircleAgent():
         self.code_dims = code_dims
         self.generator = self.create_generator()
         self.generator.load_weights('./saved_models/generator.h5')
+        self.old_generator = self.create_generator()
+        self.old_generator.load_weights('./saved_models/generator.h5')
         self.discriminator = self.create_discriminator()
+        self.result_train = []
         self.posterior = self.create_posterior(code_dims)
         self.value_net = self.create_valuenet()
         self.expert_states = []
@@ -55,7 +62,7 @@ class CircleAgent():
         c = LeakyReLU()(c)
         h = Add()([x, c])
         # h = tf.concat([x,c], 1)
-        actions = Dense(2, activation='tanh')(h)
+        actions = Dense(2)(h)
 
         model = Model(inputs=[states,codes], outputs=actions)
         return model
@@ -237,12 +244,21 @@ class CircleAgent():
     def standardize(self, states):
         for i in range(states.shape[1]):
             states[:,i] = (states[:,i] - states[:,i].mean()) / states[:,i].std()
+    
+    def show_loss(self, episode):
+        epoch_space = np.arange(1, len(self.result_train)+1, dtype=int)
+        plt.figure()
+        plt.title('TRPO')
+        plt.plot(epoch_space, self.result_train)
+        plt.legend(['train loss'], loc="upper left")
+        plt.savefig('./plots/trpo_loss_{:d}'.format(episode), dpi=100)
+        plt.close()
 
     def __train(self, episode):
         # old actions mu (test for both the same as current actions and the previous policy)
         for traj in self.trajectories:
             # traj['old_action_mus'] = self.generator([traj['states'], traj['codes']], training=False)
-            traj['old_actions'] = self.generator([traj['states'], traj['codes']], training=False)
+            traj['old_actions'] = self.old_generator([traj['states'], traj['codes']], training=False)
 
         generated_states = np.concatenate([traj['states'] for traj in self.trajectories])
         generated_actions = np.concatenate([traj['actions'] for traj in self.trajectories])
@@ -360,6 +376,10 @@ class CircleAgent():
             
             value_grads = value_tape.gradient(value_loss, self.value_net.trainable_weights)
             self.value_optimizer.apply_gradients(zip(value_grads, self.value_net.trainable_weights))
+        
+        # save old policy (generator) before updating weights
+        old_weights = self.generator.get_weights()
+        self.old_generator.set_weights(old_weights)
 
         # generator training
         generated_idx = np.arange(generated_states.shape[0])
@@ -377,6 +397,8 @@ class CircleAgent():
         dataset = tf.data.Dataset.from_tensor_slices((sampled_generated_states, sampled_generated_actions, sampled_generated_oldactions, sampled_generated_codes, sampled_advants))
         dataset = dataset.batch(batch_size=self.batch)
 
+        loss = 0.0
+        total_train_size = sum([el[0].shape[0] for el in list(dataset.as_numpy_iterator())])
         for _, (states_batch, actions_batch, oldactions_batch, codes_batch, advants_batch) in enumerate(dataset):
             # calculate previous theta (θold)
             thprev = get_flat(self.generator)
@@ -390,6 +412,7 @@ class CircleAgent():
             }
 
             (surrogate_loss, grad_tape) = self.__generator_loss(feed)
+            loss += tf.get_static_value(surrogate_loss) * states_batch.shape[0]
 
             policy_gradient = flatgrad(self.generator, surrogate_loss, grad_tape)
             nans = tf.math.is_nan(policy_gradient)
@@ -414,6 +437,11 @@ class CircleAgent():
                 self.generator.trainable_weights[weight_idx].assign(tf.reshape(theta[start:start + size], shape))
                 weight_idx += 1
                 start += size
+        
+        episode_loss = loss / total_train_size
+        self.result_train.append(episode_loss)
+
+        if episode % 5 == 0 and episode != 0: self.show_loss(episode)
     
     def infogail(self):
         # load data
@@ -441,7 +469,7 @@ class CircleAgent():
             # Sample trajectories: τi ∼ πθi(ci), with the latent code fixed during each rollout
             self.trajectories = []
 
-            plt.figure()
+            # plt.figure()
             for i in range(len(sampled_codes)):
                 trajectory_dict = {}
                 trajectory = self.__generate_policy(sampled_codes[i])
@@ -450,11 +478,11 @@ class CircleAgent():
                 trajectory_dict['codes'] = np.copy(trajectory[2])
                 self.trajectories.append(trajectory_dict)
                 
-                argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
-                plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], s=4, c=colors[argcolor], alpha=0.4)
+                # argcolor = np.where(sampled_codes[i] == 1)[0][0] # find the index of code from one-hot
+                # plt.scatter(trajectory[0][:,-2], trajectory[0][:,-1], s=4, c=colors[argcolor], alpha=0.4)
             
-            plt.savefig("./plots/trajectories_"+str(episode), dpi=100)
-            plt.close()
+            # plt.savefig("./plots/trajectories_"+str(episode), dpi=100)
+            # plt.close()
 
             # call train here
             self.__train(episode)
