@@ -1,9 +1,10 @@
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
 import tensorflow as tf
-from tensorflow.keras.layers import Input, Dense, ReLU, LeakyReLU, Add
-from tensorflow.keras.models import Model
+from tensorflow.python.keras.layers import Input, Dense, ReLU, LeakyReLU, Add
+from tensorflow.python.keras.models import Model
 import numpy as np
 import pickle as pkl
 import matplotlib.pyplot as plt
