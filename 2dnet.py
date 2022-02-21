@@ -9,17 +9,19 @@ import matplotlib.pyplot as plt
 import pickle as pkl
 import numpy as np
 import random
+import yaml
 
 from circle_env import CircleEnv
 from tqdm import trange
 from trpo import *
 
-# cpu_device = tf.config.get_visible_devices()
-# tf.config.set_visible_devices(cpu_device[0], 'CPU')
+# tf.config.threading.set_inter_op_parallelism_threads(16) 
+# tf.config.threading.set_intra_op_parallelism_threads(16)
+# tf.config.set_soft_device_placement(True)
 
-tf.config.threading.set_inter_op_parallelism_threads(16) 
-tf.config.threading.set_intra_op_parallelism_threads(16)
-tf.config.set_soft_device_placement(True)
+save_loss = True
+save_models = True
+resume_training = False
 
 class CircleAgent():
     def __init__(self, state_dims, action_dims, code_dims, episodes=2000, batch_size=2048, code_batch=512, gamma=0.95, lam=0.97, max_kl=0.01):
@@ -33,14 +35,33 @@ class CircleAgent():
         self.state_dims = state_dims
         self.action_dims = action_dims
         self.code_dims = code_dims
-        self.generator = self.create_generator()
-        self.generator.load_weights('./saved_models/generator.h5')
-        self.old_generator = self.create_generator()
-        self.old_generator.load_weights('./saved_models/generator.h5')
-        self.discriminator = self.create_discriminator()
+        self.starting_episode = 0
         self.result_train = []
+
+        self.generator = self.create_generator()
+        self.old_generator = self.create_generator()
+        self.discriminator = self.create_discriminator()
         self.posterior = self.create_posterior(code_dims)
         self.value_net = self.create_valuenet()
+
+        generator_weight_path = ''
+        old_generator_weight_path = ''
+        if resume_training:
+            with open("./saved_models/trpo/model.yml", 'r') as f:
+                data = yaml.safe_load(f)
+                self.starting_episode = data['episode']
+                self.result_train = data['losses']
+            generator_weight_path = './saved_models/trpo/generator.h5'
+            self.discriminator.load_weights('./saved_models/trpo/discriminator.h5')
+            self.posterior.load_weights('./saved_models/trpo/posterior.h5')
+            self.value_net.load_weights('./saved_models/trpo/value_net.h5')
+            old_generator_weight_path = './saved_models/trpo/old_generator.h5'
+        else:
+            generator_weight_path = './saved_models/bc/generator.h5'
+            old_generator_weight_path = generator_weight_path
+        
+        self.generator.load_weights(generator_weight_path)
+        self.old_generator.load_weights(old_generator_weight_path)
         self.expert_states = []
         self.expert_actions = []
         self.expert_codes = []
@@ -135,8 +156,8 @@ class CircleAgent():
             # action = np.clip(action, -1, 1)
 
             # current_state = (state_obsrv[-2], state_obsrv[-1])
-            s_traj.append(np.copy(state_obsrv))
-            a_traj.append(np.copy(action))
+            s_traj.append(state_obsrv)
+            a_traj.append(action)
             c_traj.append(code)
 
             # 2. environment step
@@ -217,17 +238,20 @@ class CircleAgent():
             tangents.append(param)
             start += size
 
-        with tf.GradientTape() as grad_tape, tf.GradientTape() as tape_gvp:
-            # actions_mu = self.generator([sampled_states, sampled_codes], training=True)
-            actions = self.generator([feed['states'], feed['codes']], training=True)
-            # actions_logstd = np.zeros_like(actions_mu.numpy(), dtype=np.float32)
-            # kl_firstfixed = gauss_selfKL_firstfixed(actions_mu, actions_logstd) / Nf
-            kl_firstfixed = gauss_selfKL_firstfixed(tf.reduce_mean(actions, axis=0), tf.math.reduce_std(actions, axis=0)) / Nf
+        with tf.GradientTape() as tape_gvp:
+            with tf.GradientTape() as grad_tape:
+                # actions_mu = self.generator([sampled_states, sampled_codes], training=True)
+                actions = self.generator([feed['states'], feed['codes']], training=True)
+                # actions_logstd = np.zeros_like(actions_mu.numpy(), dtype=np.float32)
+                # kl_firstfixed = gauss_selfKL_firstfixed(actions_mu, actions_logstd) / Nf
+                kl_firstfixed = gauss_selfKL_firstfixed(tf.reduce_mean(actions, axis=0), tf.math.reduce_std(actions, axis=0)) / Nf
         
             grads = grad_tape.gradient(kl_firstfixed, var_list)
             gvp = [tf.reduce_sum(g * t) for (g, t) in zip(grads, tangents)]
 
-        fvp = flatgrad(self.generator, gvp, tape_gvp)
+        fvp = flatgrad(self.generator, gvp, tape_gvp) # nan gradients here!!!
+        nans = tf.math.is_nan(fvp)
+        if(tf.where(nans).shape[0] != 0): print('Fisher vector: NAN!!!!!!!!!!!')
 
         return fvp + p * cg_damping
     
@@ -245,20 +269,21 @@ class CircleAgent():
         for i in range(states.shape[1]):
             states[:,i] = (states[:,i] - states[:,i].mean()) / states[:,i].std()
     
-    def show_loss(self, episode):
+    def show_loss(self):
         epoch_space = np.arange(1, len(self.result_train)+1, dtype=int)
         plt.figure()
         plt.title('TRPO')
         plt.plot(epoch_space, self.result_train)
-        plt.legend(['train loss'], loc="upper left")
-        plt.savefig('./plots/trpo_loss_{:d}'.format(episode), dpi=100)
+        plt.legend(['train loss'], loc="lower right")
+        plt.savefig('./plots/trpo_loss', dpi=100)
         plt.close()
 
     def __train(self, episode):
         # old actions mu (test for both the same as current actions and the previous policy)
         for traj in self.trajectories:
             # traj['old_action_mus'] = self.generator([traj['states'], traj['codes']], training=False)
-            traj['old_actions'] = self.old_generator([traj['states'], traj['codes']], training=False)
+            # traj['old_actions'] = self.old_generator([traj['states'], traj['codes']], training=False) # use old generator weights
+            traj['old_actions'] = self.generator([traj['states'], traj['codes']], training=False)
 
         generated_states = np.concatenate([traj['states'] for traj in self.trajectories])
         generated_actions = np.concatenate([traj['actions'] for traj in self.trajectories])
@@ -412,13 +437,14 @@ class CircleAgent():
             }
 
             (surrogate_loss, grad_tape) = self.__generator_loss(feed)
-            loss += tf.get_static_value(surrogate_loss) * states_batch.shape[0]
+            if save_loss:
+                loss += tf.get_static_value(surrogate_loss) * states_batch.shape[0]
 
             policy_gradient = flatgrad(self.generator, surrogate_loss, grad_tape)
             nans = tf.math.is_nan(policy_gradient)
             if(tf.where(nans).shape[0] != 0): print('NAN!!!!!!!!!!!')
-            stepdir = conjugate_gradient(self.fisher_vector_product, feed, -policy_gradient.numpy())
-            shs = 0.5 * stepdir.dot(self.fisher_vector_product(stepdir, feed))
+            stepdir = conjugate_gradient(self.fisher_vector_product, feed, -policy_gradient.numpy()) # nan values here (inside fisher vector func)
+            shs = 0.5 * stepdir.dot(self.fisher_vector_product(stepdir, feed)) # ...and here
             assert shs > 0
 
             lm = np.sqrt(shs / self.max_kl)
@@ -437,11 +463,26 @@ class CircleAgent():
                 self.generator.trainable_weights[weight_idx].assign(tf.reshape(theta[start:start + size], shape))
                 weight_idx += 1
                 start += size
-        
-        episode_loss = loss / total_train_size
-        self.result_train.append(episode_loss)
 
-        if episode % 5 == 0 and episode != 0: self.show_loss(episode)
+        if save_loss:
+            episode_loss = loss / total_train_size
+            episode_loss = episode_loss.item()
+            self.result_train.append(episode_loss)
+            if episode % 5 == 0 and episode != 0: self.show_loss()
+
+        if save_models:
+            self.generator.save_weights('./saved_models/trpo/generator.h5')
+            self.discriminator.save_weights('./saved_models/trpo/discriminator.h5')
+            self.posterior.save_weights('./saved_models/trpo/posterior.h5')
+            self.value_net.save_weights('./saved_models/trpo/value_net.h5')
+            self.old_generator.save_weights('./saved_models/trpo/old_generator.h5')
+            yaml_conf = {
+                'episode': episode+1,
+                'losses': self.result_train
+            }
+            
+            with open("./saved_models/trpo/model.yml", 'w') as f:
+                yaml.dump(yaml_conf, f, sort_keys=False, default_flow_style=False)
     
     def infogail(self):
         # load data
@@ -459,7 +500,7 @@ class CircleAgent():
         # for _ in range(self.code_dims):
         #     colors.append('#%06X' % random.randint(0x0, 0xc4b1b1))
 
-        for episode in trange(self.episodes, desc="Episode"):
+        for episode in trange(self.starting_episode, self.episodes, desc="Episode"):
             # Sample a batch of latent codes: ci ∼ p(c)
             sampled_codes = np.zeros((self.code_batch, self.code_dims))
             for i in range(self.code_batch):
@@ -486,6 +527,10 @@ class CircleAgent():
 
             # call train here
             self.__train(episode)
+        
+        # save useful stuff
+        if save_loss:
+            self.show_loss()
 
 # main
 agent = CircleAgent(10, 2, 3)

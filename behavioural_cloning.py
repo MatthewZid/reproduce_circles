@@ -117,5 +117,5 @@ if show_fig:
     plt.savefig('./plots/behaviour_cloning', dpi=100)
     plt.close()
 
-generator.save_weights('./saved_models/generator.h5')
+generator.save_weights('./saved_models/bc/generator.h5')
 print('\nGenerator saved!')

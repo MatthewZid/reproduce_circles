@@ -13,6 +13,7 @@ from tqdm import trange
 from circle_env import CircleEnv
 
 env = CircleEnv()
+load_trpo_weights = True
 
 def create_generator(state_dims, code_dims):
     initializer = tf.keras.initializers.RandomNormal()
@@ -26,7 +27,7 @@ def create_generator(state_dims, code_dims):
     c = LeakyReLU()(c)
     h = Add()([x, c])
     # h = tf.concat([x,c], 1)
-    actions = Dense(2, activation='tanh')(h)
+    actions = Dense(2)(h)
 
     model = Model(inputs=[states,codes], outputs=actions)
     return model
@@ -65,7 +66,9 @@ def generate_policy(generator, code, starting_point):
     return (s_traj, a_traj, c_traj)
 
 generator = create_generator(10, 3)
-generator.load_weights('./saved_models/generator.h5')
+
+if load_trpo_weights: generator.load_weights('./saved_models/trpo/generator.h5')
+else: generator.load_weights('./saved_models/bc/generator.h5')
 
 expert_states, expert_actions, expert_codes = pkl.load(open("expert_traj.pkl", "rb"))
 
