@@ -1,4 +1,5 @@
 import numpy as np
+import math
 import tqdm
 from scipy import signal
 import tensorflow as tf
@@ -11,6 +12,10 @@ def gauss_log_prob(mu, logstd, x):
     var = tf.exp(2*logstd)
     gp = -tf.square(x - mu)/(2 * var) - .5*tf.math.log(tf.constant(2*np.pi)) - logstd
     return tf.reduce_sum(gp, [1])
+
+def gauss_ent(logstd):
+    h = tf.reduce_sum(logstd + tf.constant(0.5*tf.math.log(2*math.pi*math.e), tf.float32))
+    return h
 
 def var_shape(x):
     out = [k.value for k in x.get_shape()]

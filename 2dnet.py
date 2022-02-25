@@ -36,7 +36,9 @@ class CircleAgent():
         self.action_dims = action_dims
         self.code_dims = code_dims
         self.starting_episode = 0
-        self.result_train = []
+        self.gen_result = []
+        self.disc_result = []
+        self.post_result = []
 
         self.generator = self.create_generator()
         self.old_generator = self.create_generator()
@@ -50,7 +52,9 @@ class CircleAgent():
             with open("./saved_models/trpo/model.yml", 'r') as f:
                 data = yaml.safe_load(f)
                 self.starting_episode = data['episode']
-                self.result_train = data['losses']
+                self.gen_result = data['gen_loss']
+                self.disc_result = data['disc_loss']
+                self.post_result = data['post_loss']
             generator_weight_path = './saved_models/trpo/generator.h5'
             self.discriminator.load_weights('./saved_models/trpo/discriminator.h5')
             self.posterior.load_weights('./saved_models/trpo/posterior.h5')
@@ -89,28 +93,30 @@ class CircleAgent():
         return model
 
     def create_discriminator(self):
+        initializer = tf.keras.initializers.RandomNormal()
         states = Input(shape=self.state_dims)
         actions = Input(shape=self.action_dims)
         merged = tf.concat([states,actions], 1)
         # x = Flatten()(merged)
-        x = Dense(128)(merged)
-        x = ReLU()(x)
-        x = Dense(128)(x)
-        x = ReLU()(x)
+        x = Dense(128, kernel_initializer=initializer)(merged)
+        x = LeakyReLU()(x)
+        x = Dense(128, kernel_initializer=initializer)(x)
+        x = LeakyReLU()(x)
         score = Dense(1)(x)
 
         model = Model(inputs=[states, actions], outputs=score)
         return model
     
     def create_posterior(self, code_dims):
+        initializer = tf.keras.initializers.RandomNormal()
         states = Input(shape=self.state_dims)
         actions = Input(shape=self.action_dims)
         merged = tf.concat([states,actions], 1)
         # x = Flatten()(merged)
-        x = Dense(128)(merged)
-        x = ReLU()(x)
-        x = Dense(128)(x)
-        x = ReLU()(x)
+        x = Dense(128, kernel_initializer=initializer)(merged)
+        x = LeakyReLU()(x)
+        x = Dense(128, kernel_initializer=initializer)(x)
+        x = LeakyReLU()(x)
         x = Dense(code_dims)(x)
         output = tf.keras.activations.softmax(x)
 
@@ -171,8 +177,12 @@ class CircleAgent():
         
         return (s_traj, a_traj, c_traj)
     
-    def __disc_loss(self, score):
-        loss = tf.reduce_mean(score * np.ones(self.batch))
+    def __disc_loss(self, score1, score2):
+        cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
+
+        genloss = cross_entropy(tf.ones_like(score1), score1)
+        expertloss = cross_entropy(tf.zeros_like(score2), score2)
+        loss = tf.reduce_mean(genloss) + tf.reduce_mean(expertloss)
 
         return loss
 
@@ -180,6 +190,7 @@ class CircleAgent():
         cross_entropy = tf.keras.losses.CategoricalCrossentropy()
 
         loss = cross_entropy(codes_batch, prob)
+        loss = tf.reduce_mean(loss)
 
         return loss
     
@@ -200,8 +211,8 @@ class CircleAgent():
 
             # log_p_n = gauss_log_prob(actions_mu, actions_logstd, feed['actions'])
             # log_oldp_n = gauss_log_prob(feed['old_action_mus'], old_actions_logstd, feed['actions'])
-            log_p_n = gauss_log_prob(tf.reduce_mean(actions, axis=0), tf.math.reduce_std(actions, axis=0), feed['actions'])
-            log_oldp_n = gauss_log_prob(tf.reduce_mean(feed['old_actions'], axis=0), tf.math.reduce_std(feed['old_actions'], axis=0), feed['actions'])
+            log_p_n = gauss_log_prob(tf.reduce_mean(actions, axis=0), tf.math.log(tf.math.reduce_std(actions, axis=0)), feed['actions'])
+            log_oldp_n = gauss_log_prob(tf.reduce_mean(feed['old_actions'], axis=0), tf.math.log(tf.math.reduce_std(feed['old_actions'], axis=0)), feed['actions'])
 
             ratio_n = tf.exp(log_p_n - log_oldp_n)
             surrogate_loss = -tf.reduce_mean(ratio_n * feed['advants'])
@@ -244,8 +255,8 @@ class CircleAgent():
                 actions = self.generator([feed['states'], feed['codes']], training=True)
                 # actions_logstd = np.zeros_like(actions_mu.numpy(), dtype=np.float32)
                 # kl_firstfixed = gauss_selfKL_firstfixed(actions_mu, actions_logstd) / Nf
-                kl_firstfixed = gauss_selfKL_firstfixed(tf.reduce_mean(actions, axis=0), tf.math.reduce_std(actions, axis=0)) / Nf
-        
+                kl_firstfixed = gauss_selfKL_firstfixed(tf.reduce_mean(actions, axis=0), tf.math.log(tf.math.reduce_std(actions, axis=0))) / Nf
+
             grads = grad_tape.gradient(kl_firstfixed, var_list)
             gvp = [tf.reduce_sum(g * t) for (g, t) in zip(grads, tangents)]
 
@@ -270,11 +281,13 @@ class CircleAgent():
             states[:,i] = (states[:,i] - states[:,i].mean()) / states[:,i].std()
     
     def show_loss(self):
-        epoch_space = np.arange(1, len(self.result_train)+1, dtype=int)
+        epoch_space = np.arange(1, len(self.gen_result)+1, dtype=int)
         plt.figure()
-        plt.title('TRPO')
-        plt.plot(epoch_space, self.result_train)
-        plt.legend(['train loss'], loc="lower right")
+        plt.title('Losses')
+        plt.plot(epoch_space, self.gen_result)
+        plt.plot(epoch_space, self.disc_result)
+        plt.plot(epoch_space, self.post_result)
+        plt.legend(['gen', 'disc', 'post'], loc="upper right")
         plt.savefig('./plots/trpo_loss', dpi=100)
         plt.close()
 
@@ -316,22 +329,35 @@ class CircleAgent():
         dataset = dataset.batch(batch_size=self.batch)
 
         # train discriminator
+        loss = 0.0
+        total_train_size = sum([el[0].shape[0] for el in list(dataset.as_numpy_iterator())])
         for _, (generated_states_batch, generated_actions_batch, expert_states_batch, expert_actions_batch) in enumerate(dataset):
             with tf.GradientTape() as disc_tape:
                 score1 = self.discriminator([generated_states_batch, generated_actions_batch], training=True)
                 score2 = self.discriminator([expert_states_batch, expert_actions_batch], training=True)
-                score2 = -score2
-                total_score = tf.math.add(score1, score2)
 
-                disc_loss = self.__disc_loss(total_score)
+                # wasserstein loss: D(x) - D(G(z))
+                # score1 = tf.reduce_mean(score1)
+                # score2 = -score2
+                # score2 = tf.reduce_mean(score2)
+                # disc_loss = tf.math.add(score1, score2)
+
+                # cross entropy loss: D(G(z)) + (1 - D(x))
+                disc_loss = self.__disc_loss(score1, score2)
             
+            if save_loss: loss += tf.get_static_value(disc_loss) * generated_states_batch.shape[0]
             gradients_of_discriminator = disc_tape.gradient(disc_loss, self.discriminator.trainable_weights)
             self.disc_optimizer.apply_gradients(zip(gradients_of_discriminator, self.discriminator.trainable_weights))
 
-            for l in self.discriminator.layers:
-                weights = l.get_weights()
-                weights = [np.clip(w, -0.01, 0.01) for w in weights]
-                l.set_weights(weights)
+            # for l in self.discriminator.layers:
+            #     weights = l.get_weights()
+            #     weights = [np.clip(w, -0.01, 0.01) for w in weights]
+            #     l.set_weights(weights)
+        
+        if save_loss:
+            episode_loss = loss / total_train_size
+            episode_loss = episode_loss.item()
+            self.disc_result.append(episode_loss)
 
         # train posterior
         generated_idx = np.arange(generated_states.shape[0])
@@ -345,144 +371,167 @@ class CircleAgent():
         dataset = tf.data.Dataset.from_tensor_slices((sampled_generated_states, sampled_generated_actions, sampled_generated_codes))
         dataset = dataset.batch(batch_size=self.batch)
 
+        loss = 0.0
+        total_train_size = sum([el[0].shape[0] for el in list(dataset.as_numpy_iterator())])
         for _, (states_batch, actions_batch, codes_batch) in enumerate(dataset):
             with tf.GradientTape() as post_tape:
                 prob = self.posterior([states_batch, actions_batch], training=True)
 
                 post_loss = self.__post_loss(prob, codes_batch)
             
+            if save_loss: loss += tf.get_static_value(post_loss) * states_batch.shape[0]
             gradients_of_posterior = post_tape.gradient(post_loss, self.posterior.trainable_weights)
             self.posterior_optimizer.apply_gradients(zip(gradients_of_posterior, self.posterior.trainable_weights))
-
-        # train generator (TRPO)
-        # calculate rewards from discriminator and posterior
-        for traj in self.trajectories:
-            reward_d = self.discriminator([traj['states'], traj['actions']], training=False).numpy()
-            reward_p = self.posterior([traj['states'], traj['actions']], training=False).numpy()
-
-            traj['rewards'] = np.ones(traj['states'].shape[0]) * 2 \
-                + reward_d.flatten() * 0.1 \
-                + np.sum(np.log(reward_p, out=np.zeros_like(reward_p), where=(reward_p!=0)) * traj['codes'], axis=1)
-            
-            # calculate values, advants and returns
-            values = self.value_net([traj['states'], traj['codes']], training=False).numpy().flatten() # Value function
-            baselines = np.append(values, 0 if values.shape[0] == 100 else values[-1])
-            deltas = traj['rewards'] + self.gamma * baselines[1:] - baselines[:-1] # Advantage(st,at) = rt+1 + γ*V(st+1) - V(st)
-            traj['advants'] = discount(deltas, self.gamma * self.lam)
-            traj['returns'] = discount(traj['rewards'], self.gamma)
-        
-        advants = np.concatenate([traj['advants'] for traj in self.trajectories])
-
-        # standardize advantages
-        advants /= (advants.std() + 1e-8)
-
-        # train value net for next iter
-        returns = np.concatenate([traj['returns'] for traj in self.trajectories])
-        if episode != 0:
-            returns_old = np.concatenate([self.value_net([traj['states'], traj['codes']]).numpy().flatten() for traj in self.trajectories])
-            returns = returns * 0.1 + returns_old * 0.9
-
-        generated_idx = np.arange(generated_states.shape[0])
-        np.random.shuffle(generated_idx)
-        sampled_generated_states = generated_states[generated_idx, :]
-        sampled_generated_codes = generated_codes[generated_idx, :]
-        sampled_returns = returns[generated_idx]
-        sampled_generated_states = tf.convert_to_tensor(sampled_generated_states, dtype=tf.float32)
-        sampled_generated_codes = tf.convert_to_tensor(sampled_generated_codes, dtype=tf.float32)
-        sampled_returns = tf.convert_to_tensor(sampled_returns, dtype=tf.float32)
-        dataset = tf.data.Dataset.from_tensor_slices((sampled_generated_states, sampled_generated_codes, sampled_returns))
-        dataset = dataset.batch(batch_size=self.batch)
-
-        for _, (states_batch, codes_batch, returns_batch) in enumerate(dataset):
-            with tf.GradientTape() as value_tape:
-                value_pred = self.value_net([states_batch, codes_batch], training=True)
-
-                value_loss = self.__value_loss(value_pred, returns_batch)
-            
-            value_grads = value_tape.gradient(value_loss, self.value_net.trainable_weights)
-            self.value_optimizer.apply_gradients(zip(value_grads, self.value_net.trainable_weights))
-        
-        # save old policy (generator) before updating weights
-        old_weights = self.generator.get_weights()
-        self.old_generator.set_weights(old_weights)
-
-        # generator training
-        generated_idx = np.arange(generated_states.shape[0])
-        np.random.shuffle(generated_idx)
-        sampled_generated_states = generated_states[generated_idx, :]
-        sampled_generated_codes = generated_codes[generated_idx, :]
-        sampled_generated_actions = generated_actions[generated_idx, :]
-        sampled_generated_oldactions = generated_oldactions[generated_idx, :]
-        sampled_advants = advants[generated_idx]
-        sampled_generated_states = tf.convert_to_tensor(sampled_generated_states, dtype=tf.float32)
-        sampled_generated_codes = tf.convert_to_tensor(sampled_generated_codes, dtype=tf.float32)
-        sampled_generated_actions = tf.convert_to_tensor(sampled_generated_actions, dtype=tf.float32)
-        sampled_generated_oldactions = tf.convert_to_tensor(sampled_generated_oldactions, dtype=tf.float32)
-        sampled_advants = tf.convert_to_tensor(sampled_advants, dtype=tf.float32)
-        dataset = tf.data.Dataset.from_tensor_slices((sampled_generated_states, sampled_generated_actions, sampled_generated_oldactions, sampled_generated_codes, sampled_advants))
-        dataset = dataset.batch(batch_size=self.batch)
-
-        loss = 0.0
-        total_train_size = sum([el[0].shape[0] for el in list(dataset.as_numpy_iterator())])
-        for _, (states_batch, actions_batch, oldactions_batch, codes_batch, advants_batch) in enumerate(dataset):
-            # calculate previous theta (θold)
-            thprev = get_flat(self.generator)
-
-            feed = {
-                'states': states_batch,
-                'actions': actions_batch,
-                'codes': codes_batch,
-                'advants': advants_batch,
-                'old_actions': oldactions_batch
-            }
-
-            (surrogate_loss, grad_tape) = self.__generator_loss(feed)
-            if save_loss:
-                loss += tf.get_static_value(surrogate_loss) * states_batch.shape[0]
-
-            policy_gradient = flatgrad(self.generator, surrogate_loss, grad_tape)
-            nans = tf.math.is_nan(policy_gradient)
-            if(tf.where(nans).shape[0] != 0): print('NAN!!!!!!!!!!!')
-            stepdir = conjugate_gradient(self.fisher_vector_product, feed, -policy_gradient.numpy()) # nan values here (inside fisher vector func)
-            shs = 0.5 * stepdir.dot(self.fisher_vector_product(stepdir, feed)) # ...and here
-            assert shs > 0
-
-            lm = np.sqrt(shs / self.max_kl)
-            fullstep = stepdir / lm
-            neggdotstepdir = -policy_gradient.numpy().dot(stepdir)
-
-            theta = linesearch(self.get_loss, thprev, feed, fullstep, neggdotstepdir / lm)
-            # set_from_flat(self.generator, theta)
-            var_list = self.generator.trainable_weights
-            shapes = [v.shape for v in var_list]
-            start = 0
-
-            weight_idx = 0
-            for shape in shapes:
-                size = np.prod(shape)
-                self.generator.trainable_weights[weight_idx].assign(tf.reshape(theta[start:start + size], shape))
-                weight_idx += 1
-                start += size
 
         if save_loss:
             episode_loss = loss / total_train_size
             episode_loss = episode_loss.item()
-            self.result_train.append(episode_loss)
-            if episode % 5 == 0 and episode != 0: self.show_loss()
+            self.post_result.append(episode_loss)
 
-        if save_models:
-            self.generator.save_weights('./saved_models/trpo/generator.h5')
-            self.discriminator.save_weights('./saved_models/trpo/discriminator.h5')
-            self.posterior.save_weights('./saved_models/trpo/posterior.h5')
-            self.value_net.save_weights('./saved_models/trpo/value_net.h5')
-            self.old_generator.save_weights('./saved_models/trpo/old_generator.h5')
-            yaml_conf = {
-                'episode': episode+1,
-                'losses': self.result_train
-            }
+        # TRPO
+        # calculate rewards from discriminator and posterior
+        for traj in self.trajectories:
+            reward_d = (-tf.math.log(tf.keras.activations.sigmoid(self.discriminator([traj['states'], traj['actions']], training=False)))).numpy()
+            reward_p = tf.mth.log(self.posterior([traj['states'], traj['actions']], training=False)).numpy()
+
+
+
+        ###########################################################################################################################################################
+        ############################################################### Basic TRPO code ###########################################################################
+        ###########################################################################################################################################################
+        # # train generator (TRPO)
+        # # calculate rewards from discriminator and posterior
+        # for traj in self.trajectories:
+        #     reward_d = self.discriminator([traj['states'], traj['actions']], training=False).numpy()
+        #     reward_p = self.posterior([traj['states'], traj['actions']], training=False).numpy()
+
+        #     traj['rewards'] = -tf.math.log(reward_d.flatten()) +  \
+        #         + np.sum(np.log(reward_p, out=np.zeros_like(reward_p), where=(reward_p!=0)) * traj['codes'], axis=1)
             
-            with open("./saved_models/trpo/model.yml", 'w') as f:
-                yaml.dump(yaml_conf, f, sort_keys=False, default_flow_style=False)
+        #     # calculate values, advants and returns
+        #     values = self.value_net([traj['states'], traj['codes']], training=False).numpy().flatten() # Value function
+        #     baselines = np.append(values, 0 if values.shape[0] == 100 else values[-1])
+        #     deltas = traj['rewards'] + self.gamma * baselines[1:] - baselines[:-1] # Advantage(st,at) = rt+1 + γ*V(st+1) - V(st)
+        #     traj['advants'] = discount(deltas, self.gamma * self.lam)
+        #     traj['returns'] = discount(traj['rewards'], self.gamma)
+        
+        # advants = np.concatenate([traj['advants'] for traj in self.trajectories])
+
+        # # standardize advantages
+        # advants /= (advants.std() + 1e-8)
+
+        # # train value net for next iter
+        # returns = np.concatenate([traj['returns'] for traj in self.trajectories])
+        # # if episode != 0:
+        # #     returns_old = np.concatenate([self.value_net([traj['states'], traj['codes']]).numpy().flatten() for traj in self.trajectories])
+        # #     returns = returns * 0.1 + returns_old * 0.9
+
+        # generated_idx = np.arange(generated_states.shape[0])
+        # np.random.shuffle(generated_idx)
+        # sampled_generated_states = generated_states[generated_idx, :]
+        # sampled_generated_codes = generated_codes[generated_idx, :]
+        # sampled_returns = returns[generated_idx]
+        # sampled_generated_states = tf.convert_to_tensor(sampled_generated_states, dtype=tf.float32)
+        # sampled_generated_codes = tf.convert_to_tensor(sampled_generated_codes, dtype=tf.float32)
+        # sampled_returns = tf.convert_to_tensor(sampled_returns, dtype=tf.float32)
+        # dataset = tf.data.Dataset.from_tensor_slices((sampled_generated_states, sampled_generated_codes, sampled_returns))
+        # dataset = dataset.batch(batch_size=self.batch)
+
+        # for _, (states_batch, codes_batch, returns_batch) in enumerate(dataset):
+        #     with tf.GradientTape() as value_tape:
+        #         value_pred = self.value_net([states_batch, codes_batch], training=True)
+
+        #         value_loss = self.__value_loss(value_pred, returns_batch)
+            
+        #     value_grads = value_tape.gradient(value_loss, self.value_net.trainable_weights)
+        #     self.value_optimizer.apply_gradients(zip(value_grads, self.value_net.trainable_weights))
+        
+        # # save old policy (generator) before updating weights
+        # old_weights = self.generator.get_weights()
+        # self.old_generator.set_weights(old_weights)
+
+        # # generator training
+        # generated_idx = np.arange(generated_states.shape[0])
+        # np.random.shuffle(generated_idx)
+        # sampled_generated_states = generated_states[generated_idx, :]
+        # sampled_generated_codes = generated_codes[generated_idx, :]
+        # sampled_generated_actions = generated_actions[generated_idx, :]
+        # sampled_generated_oldactions = generated_oldactions[generated_idx, :]
+        # sampled_advants = advants[generated_idx]
+        # sampled_generated_states = tf.convert_to_tensor(sampled_generated_states, dtype=tf.float32)
+        # sampled_generated_codes = tf.convert_to_tensor(sampled_generated_codes, dtype=tf.float32)
+        # sampled_generated_actions = tf.convert_to_tensor(sampled_generated_actions, dtype=tf.float32)
+        # sampled_generated_oldactions = tf.convert_to_tensor(sampled_generated_oldactions, dtype=tf.float32)
+        # sampled_advants = tf.convert_to_tensor(sampled_advants, dtype=tf.float32)
+        # dataset = tf.data.Dataset.from_tensor_slices((sampled_generated_states, sampled_generated_actions, sampled_generated_oldactions, sampled_generated_codes, sampled_advants))
+        # dataset = dataset.batch(batch_size=self.batch)
+
+        # loss = 0.0
+        # total_train_size = sum([el[0].shape[0] for el in list(dataset.as_numpy_iterator())])
+        # for _, (states_batch, actions_batch, oldactions_batch, codes_batch, advants_batch) in enumerate(dataset):
+        #     # calculate previous theta (θold)
+        #     thprev = get_flat(self.generator)
+
+        #     feed = {
+        #         'states': states_batch,
+        #         'actions': actions_batch,
+        #         'codes': codes_batch,
+        #         'advants': advants_batch,
+        #         'old_actions': oldactions_batch
+        #     }
+
+        #     (surrogate_loss, grad_tape) = self.__generator_loss(feed)
+        #     if save_loss:
+        #         loss += tf.get_static_value(surrogate_loss) * states_batch.shape[0]
+
+        #     policy_gradient = flatgrad(self.generator, surrogate_loss, grad_tape)
+        #     nans = tf.math.is_nan(policy_gradient)
+        #     if(tf.where(nans).shape[0] != 0): print('NAN!!!!!!!!!!!')
+        #     stepdir = conjugate_gradient(self.fisher_vector_product, feed, -policy_gradient.numpy()) # nan values here (inside fisher vector func)
+        #     shs = 0.5 * stepdir.dot(self.fisher_vector_product(stepdir, feed)) # ...and here
+        #     assert shs > 0
+
+        #     lm = np.sqrt(shs / self.max_kl)
+        #     fullstep = stepdir / lm
+        #     neggdotstepdir = -policy_gradient.numpy().dot(stepdir)
+
+        #     theta = linesearch(self.get_loss, thprev, feed, fullstep, neggdotstepdir / lm)
+        #     # set_from_flat(self.generator, theta)
+        #     var_list = self.generator.trainable_weights
+        #     shapes = [v.shape for v in var_list]
+        #     start = 0
+
+        #     weight_idx = 0
+        #     for shape in shapes:
+        #         size = np.prod(shape)
+        #         self.generator.trainable_weights[weight_idx].assign(tf.reshape(theta[start:start + size], shape))
+        #         weight_idx += 1
+        #         start += size
+
+        # if save_loss:
+        #     episode_loss = loss / total_train_size
+        #     episode_loss = episode_loss.item()
+        #     self.gen_result.append(episode_loss)
+        #     if episode % 5 == 0 and episode != 0: self.show_loss()
+
+        # if save_models:
+        #     self.generator.save_weights('./saved_models/trpo/generator.h5')
+        #     self.discriminator.save_weights('./saved_models/trpo/discriminator.h5')
+        #     self.posterior.save_weights('./saved_models/trpo/posterior.h5')
+        #     self.value_net.save_weights('./saved_models/trpo/value_net.h5')
+        #     self.old_generator.save_weights('./saved_models/trpo/old_generator.h5')
+        #     yaml_conf = {
+        #         'episode': episode+1,
+        #         'gen_loss': self.gen_result,
+        #         'disc_loss': self.disc_result,
+        #         'post_loss': self.post_result
+        #     }
+            
+        #     with open("./saved_models/trpo/model.yml", 'w') as f:
+        #         yaml.dump(yaml_conf, f, sort_keys=False, default_flow_style=False)
+        ###########################################################################################################################################################
+        ###########################################################################################################################################################
+        ###########################################################################################################################################################
     
     def infogail(self):
         # load data

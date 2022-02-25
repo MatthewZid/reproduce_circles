@@ -78,8 +78,8 @@ expert_codes = np.concatenate(expert_codes)
 
 colors = ['red','green','blue']
 plt.figure()
-plt.xlim(-1,1)
-plt.ylim(-1,1)
+# plt.xlim(-1,1)
+# plt.ylim(-1,1)
 for i in trange(8):
     pick = np.random.choice(expert_codes.shape[0], 1)[0]
     traj = generate_policy(generator, expert_codes[pick], (expert_states[pick, -2], expert_states[pick, -1]))
