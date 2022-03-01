@@ -8,7 +8,7 @@ s_traj, _, c_traj = pkl.load(open("expert_traj.pkl", "rb"))
 s_traj = np.concatenate(s_traj)
 c_traj = np.concatenate(c_traj)
 
-colors = ['red','green','blue']
+colors = ['red','blue','green']
 color_list = []
 for i in range(c_traj.shape[0]):
     argcolor = np.where(c_traj[i] == 1)[0][0] # find the index of code from one-hot

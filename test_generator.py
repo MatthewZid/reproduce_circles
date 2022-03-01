@@ -76,7 +76,7 @@ expert_states = np.concatenate(expert_states)
 expert_actions = np.concatenate(expert_actions)
 expert_codes = np.concatenate(expert_codes)
 
-colors = ['red','green','blue']
+colors = ['red','blue','green']
 plt.figure()
 # plt.xlim(-1,1)
 # plt.ylim(-1,1)
