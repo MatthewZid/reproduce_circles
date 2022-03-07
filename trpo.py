@@ -40,10 +40,10 @@ def set_from_flat(model, theta):
         v.assign(tf.reshape(theta[start:start + size], shape))
         start += size
 
-def flatgrad(model, loss, tape):
+def flatgrad(model, loss, tape, type='n'):
     var_list = model.trainable_weights
-    # grads = tf.gradients(loss, var_list)
-    grads = tape.gradient(loss, var_list)
+    if type == 'n': grads = tape.gradient(loss, var_list)
+    else: grads = tape.jacobian(loss, var_list, unconnected_gradients=tf.UnconnectedGradients.ZERO)
     return tf.concat([tf.reshape(grad, [numel(v)]) for (v, grad) in zip(var_list, grads)], 0)
 
 def gauss_selfKL_firstfixed(mu, logstd):
@@ -85,6 +85,8 @@ def conjugate_gradient(f_Ax, feed, b, cg_iters=10, residual_tol=1e-10):
         newrdotr = r.dot(r)
         mu = newrdotr / rdotr
         p = r + mu * p
+        assert z.shape == p.shape and p.shape == x.shape \
+            and x.shape == r.shape, "Conjugate shape difference"
         rdotr = newrdotr
         if rdotr < residual_tol:
             break
