@@ -37,6 +37,8 @@ def generate_policy(generator, code, starting_point):
     a_traj = []
     c_traj = []
 
+    logstd = np.array([-0.4, -0.4])
+
     # generate actions for every current state
     state_obsrv = env.reset(start=starting_point) # reset environment state
     code_tf = tf.constant(code)
@@ -46,8 +48,13 @@ def generate_policy(generator, code, starting_point):
         # 1. generate actions with generator
         state_tf = tf.constant(state_obsrv)
         state_tf = tf.expand_dims(state_tf, axis=0)
-        action = generator([state_tf, code_tf], training=False)
-        action = tf.squeeze(action).numpy()
+        action_mu = generator([state_tf, code_tf], training=False)
+        action_mu = tf.squeeze(action_mu).numpy()
+
+        action_std = np.exp(logstd)
+        # sample action
+        z = np.random.randn(1, logstd.shape[0])
+        action = action_mu + action_std * z[0]
 
         # current_state = (state_obsrv[-2], state_obsrv[-1])
         s_traj.append(state_obsrv)
