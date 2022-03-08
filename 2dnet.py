@@ -25,7 +25,7 @@ save_models = True
 resume_training = False
 
 class CircleAgent():
-    def __init__(self, state_dims, action_dims, code_dims, episodes=2000, batch_size=2048, code_batch=256, gamma=0.95, lam=0.97, max_kl=0.01):
+    def __init__(self, state_dims, action_dims, code_dims, episodes=2000, batch_size=2048, code_batch=192, gamma=0.95, lam=0.97, max_kl=0.01):
         self.env = CircleEnv()
         self.episodes = episodes
         self.batch = batch_size
@@ -43,13 +43,13 @@ class CircleAgent():
         self.value_result = []
 
         self.generator = self.create_generator()
-        self.old_generator = self.create_generator()
+        # self.old_generator = self.create_generator()
         self.discriminator = self.create_discriminator()
         self.posterior = self.create_posterior(code_dims)
         self.value_net = self.create_valuenet()
 
         generator_weight_path = ''
-        old_generator_weight_path = ''
+        # old_generator_weight_path = ''
         if resume_training:
             with open("./saved_models/trpo/model.yml", 'r') as f:
                 data = yaml.safe_load(f)
@@ -62,10 +62,10 @@ class CircleAgent():
             self.discriminator.load_weights('./saved_models/trpo/discriminator.h5')
             self.posterior.load_weights('./saved_models/trpo/posterior.h5')
             self.value_net.load_weights('./saved_models/trpo/value_net.h5')
-            old_generator_weight_path = './saved_models/trpo/old_generator.h5'
+            # old_generator_weight_path = './saved_models/trpo/old_generator.h5'
         else:
             generator_weight_path = './saved_models/bc/generator.h5'
-            old_generator_weight_path = generator_weight_path
+            # old_generator_weight_path = generator_weight_path
         
         self.generator.load_weights(generator_weight_path)
         # self.old_generator.load_weights(old_generator_weight_path)
@@ -302,9 +302,14 @@ class CircleAgent():
         plt.plot(epoch_space, self.gen_result)
         plt.plot(epoch_space, self.disc_result)
         plt.plot(epoch_space, self.post_result)
-        # plt.plot(epoch_space, self.value_result)
         plt.legend(['gen', 'disc', 'post'], loc="lower left")
         plt.savefig('./plots/trpo_loss', dpi=100)
+        plt.close()
+
+        plt.figure()
+        plt.title('Value loss')
+        plt.plot(epoch_space, self.value_result)
+        plt.savefig('./plots/value_loss', dpi=100)
         plt.close()
 
     # def __train(self, episode):
@@ -495,7 +500,7 @@ class CircleAgent():
     #             yaml.dump(yaml_conf, f, sort_keys=False, default_flow_style=False)
 
     ############################################################################################################################################
-    ################################################################## Old version #############################################################
+    ################################################################## Newest version ##########################################################
     ############################################################################################################################################
     def __train(self, episode):
         # old actions mu (test for both the same as current actions and the previous policy)
@@ -516,14 +521,17 @@ class CircleAgent():
         sampled_expert_states = self.expert_states[expert_idx, :]
         sampled_expert_actions = self.expert_actions[expert_idx, :]
 
-        sampled_generated_states = []
-        sampled_generated_actions = []
-        generated_idx = []
-        if generated_states.shape[0] > self.expert_states.shape[0]:
-            generated_idx = np.random.choice(generated_states.shape[0], self.expert_states.shape[0], replace=False)
-        else:
-            generated_idx = np.arange(generated_states.shape[0])
-            np.random.shuffle(generated_idx)
+        # sampled_generated_states = []
+        # sampled_generated_actions = []
+        # generated_idx = []
+        # if generated_states.shape[0] > self.expert_states.shape[0]:
+        #     generated_idx = np.random.choice(generated_states.shape[0], self.expert_states.shape[0], replace=False)
+        # else:
+        #     generated_idx = np.arange(generated_states.shape[0])
+        #     np.random.shuffle(generated_idx)
+
+        generated_idx = np.arange(generated_states.shape[0])
+        np.random.shuffle(generated_idx)
 
         sampled_generated_states = generated_states[generated_idx, :]
         sampled_generated_actions = generated_actions[generated_idx, :]
@@ -639,7 +647,7 @@ class CircleAgent():
 
                 value_loss = self.__value_loss(value_pred, returns_batch)
             
-            if save_loss: loss += tf.get_static_value(post_loss) * states_batch.shape[0]
+            if save_loss: loss += tf.get_static_value(value_loss) * states_batch.shape[0]
             value_grads = value_tape.gradient(value_loss, self.value_net.trainable_weights)
             self.value_optimizer.apply_gradients(zip(value_grads, self.value_net.trainable_weights))
         
@@ -726,12 +734,13 @@ class CircleAgent():
             self.discriminator.save_weights('./saved_models/trpo/discriminator.h5')
             self.posterior.save_weights('./saved_models/trpo/posterior.h5')
             self.value_net.save_weights('./saved_models/trpo/value_net.h5')
-            self.old_generator.save_weights('./saved_models/trpo/old_generator.h5')
+            # self.old_generator.save_weights('./saved_models/trpo/old_generator.h5')
             yaml_conf = {
                 'episode': episode+1,
                 'gen_loss': self.gen_result,
                 'disc_loss': self.disc_result,
-                'post_loss': self.post_result
+                'post_loss': self.post_result,
+                'value_loss': self.value_result
             }
             
             with open("./saved_models/trpo/model.yml", 'w') as f:
