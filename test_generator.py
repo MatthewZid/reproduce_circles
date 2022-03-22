@@ -18,15 +18,13 @@ load_trpo_weights = True
 def create_generator(state_dims, code_dims):
     initializer = tf.keras.initializers.RandomNormal()
     states = Input(shape=state_dims)
-    x = Dense(128, kernel_initializer=initializer)(states)
-    x = LeakyReLU()(x)
-    x = Dense(128, kernel_initializer=initializer)(x)
+    x = Dense(100, kernel_initializer=initializer)(states)
     x = LeakyReLU()(x)
     codes = Input(shape=code_dims)
-    c = Dense(128, kernel_initializer=initializer)(codes)
+    c = Dense(64, kernel_initializer=initializer)(codes)
     c = LeakyReLU()(c)
-    h = Add()([x, c])
-    # h = tf.concat([x,c], 1)
+    # h = Add()([x, c])
+    h = tf.concat([x,c], 1)
     actions = Dense(2)(h)
 
     model = Model(inputs=[states,codes], outputs=actions)
@@ -53,16 +51,16 @@ def generate_policy(generator, code, starting_point):
 
         action_std = np.exp(logstd)
         # sample action
-        z = np.random.randn(1, logstd.shape[0])
-        action = action_mu + action_std * z[0]
+        # z = np.random.randn(1, logstd.shape[0])
+        # action = action_mu + action_std * z[0]
 
         # current_state = (state_obsrv[-2], state_obsrv[-1])
         s_traj.append(state_obsrv)
-        a_traj.append(action)
+        a_traj.append(action_mu)
         c_traj.append(code)
 
         # 2. environment step
-        state_obsrv, done = env.step(action)
+        state_obsrv, done = env.step(action_mu)
 
         if done:
             s_traj = np.array(s_traj, dtype=np.float32)

@@ -17,15 +17,13 @@ show_fig = True
 def create_generator(state_dims, code_dims):
     initializer = tf.keras.initializers.RandomNormal()
     states = Input(shape=state_dims)
-    x = Dense(128, kernel_initializer=initializer)(states)
-    x = LeakyReLU()(x)
-    x = Dense(128, kernel_initializer=initializer)(x)
+    x = Dense(100, kernel_initializer=initializer)(states)
     x = LeakyReLU()(x)
     codes = Input(shape=code_dims)
-    c = Dense(128, kernel_initializer=initializer)(codes)
+    c = Dense(64, kernel_initializer=initializer)(codes)
     c = LeakyReLU()(c)
-    h = Add()([x, c])
-    # h = tf.concat([x,c], 1)
+    # h = Add()([x, c])
+    h = tf.concat([x,c], 1)
     actions = Dense(2)(h)
 
     model = Model(inputs=[states,codes], outputs=actions)
@@ -78,7 +76,7 @@ gen_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 mse = tf.keras.losses.MeanSquaredError()
 
 # epochs = 50
-epochs = 500
+epochs = 1000
 total_train_size = sum([el[0].shape[0] for el in list(train_data.as_numpy_iterator())])
 total_val_size = sum([el[0].shape[0] for el in list(val_data.as_numpy_iterator())])
 result_train = []
