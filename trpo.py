@@ -5,6 +5,11 @@ from scipy import signal
 import tensorflow as tf
 
 improved = 0
+save_loss = True
+save_models = False
+resume_training = False
+use_ppo = False
+LOGSTD = -3.5
 
 def discount(x, gamma):
     assert x.ndim >= 1
