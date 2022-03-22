@@ -4,6 +4,8 @@ import tqdm
 from scipy import signal
 import tensorflow as tf
 
+improved = 0
+
 def discount(x, gamma):
     assert x.ndim >= 1
     return signal.lfilter([1], [1, -gamma], x[::-1], axis=0)[::-1]
@@ -68,7 +70,10 @@ def linesearch(f, x, feed, fullstep, expected_improve_rate):
         expected_improve = expected_improve_rate * stepfrac
         ratio = actual_improve / expected_improve
         if ratio > accept_ratio and actual_improve > 0:
+            global improved
+            improved += 1
             return xnew
+    # print("NOT IMPROVED............")
     return x
 
 def conjugate_gradient(f_Ax, feed, b, cg_iters=10, residual_tol=1e-10):
