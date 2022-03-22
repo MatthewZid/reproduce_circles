@@ -19,8 +19,8 @@ class CircleEnv():
 		self.ys       = []
 		self.speed    = speed
 
-		self.fig = plt.figure()
-		self.ax  = self.fig.add_subplot(111)
+		# self.fig = plt.figure()
+		# self.ax  = self.fig.add_subplot(111)
 		# mng = plt.get_current_fig_manager()
 		# mng.resize(*mng.window.maxsize())
 	
