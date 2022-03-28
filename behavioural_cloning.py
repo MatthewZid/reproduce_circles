@@ -15,13 +15,13 @@ BATCH_SIZE = 2048
 show_fig = True
 
 def create_generator(state_dims, code_dims):
-    initializer = tf.keras.initializers.RandomNormal()
+    initializer = tf.keras.initializers.HeNormal()
     states = Input(shape=state_dims)
     x = Dense(100, kernel_initializer=initializer)(states)
-    x = LeakyReLU()(x)
+    x = ReLU()(x)
     codes = Input(shape=code_dims)
     c = Dense(64, kernel_initializer=initializer)(codes)
-    c = LeakyReLU()(c)
+    c = ReLU()(c)
     # h = Add()([x, c])
     h = tf.concat([x,c], 1)
     actions = Dense(2)(h)

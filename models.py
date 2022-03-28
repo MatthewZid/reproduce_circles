@@ -4,7 +4,7 @@ os.environ["CUDA_VISIBLE_DEVICES"]="-1"
 
 import tensorflow as tf
 import tensorflow_probability as tfp
-from tensorflow.python.keras.layers import Input, Dense, LeakyReLU, Add
+from tensorflow.python.keras.layers import Input, Dense, LeakyReLU, ReLU, Add
 from tensorflow.python.keras.models import Model
 import numpy as np
 import matplotlib.pyplot as plt
@@ -21,17 +21,17 @@ class Generator():
         self.max_kl = max_kl
         self.model = self.create_generator()
     
-    def create_generator(self):
-        initializer = tf.keras.initializers.RandomNormal()
-        states = Input(shape=self.state_dims)
+    def create_generator(state_dims, code_dims):
+        initializer = tf.keras.initializers.HeNormal()
+        states = Input(shape=state_dims)
         x = Dense(100, kernel_initializer=initializer)(states)
-        x = LeakyReLU()(x)
-        codes = Input(shape=self.code_dims)
+        x = ReLU()(x)
+        codes = Input(shape=code_dims)
         c = Dense(64, kernel_initializer=initializer)(codes)
-        c = LeakyReLU()(c)
+        c = ReLU()(c)
         # h = Add()([x, c])
         h = tf.concat([x,c], 1)
-        actions = Dense(self.action_dims)(h)
+        actions = Dense(2)(h)
 
         model = Model(inputs=[states,codes], outputs=actions)
         return model
