@@ -7,6 +7,7 @@ import tensorflow_probability as tfp
 from tensorflow.python.keras.layers import Input, Dense, LeakyReLU, Add
 from tensorflow.python.keras.models import Model
 import numpy as np
+import matplotlib.pyplot as plt
 from trpo import *
 
 tfd = tfp.distributions
@@ -37,14 +38,14 @@ class Generator():
 
     def __generator_loss(self, feed):
         # calculate ratio between old and new policy (surrogate loss)
-        with tf.GradientTape(persistent=True) as grad_tape:
-            actions_mu = self.model([feed['states'], feed['codes']], training=True)
+        with tf.GradientTape() as grad_tape:
+            actions_mu = normalize_mu(self.model([feed['states'], feed['codes']], training=True))
 
             nans = tf.math.is_nan(actions_mu)
             if(tf.where(nans).numpy().flatten().shape[0] != 0): print('Mus: NAN!!!!!!!!!!!')
 
             # log_p_n = gauss_log_prob(actions_mu, LOGSTD, feed['actions'])
-            # log_oldp_n = gauss_log_prob(feed['old_actions'], LOGSTD, feed['actions'])
+            # log_oldp_n = gauss_log_prob(feed['old_mus'], LOGSTD, feed['actions'])
             # ...OR...
             dist = tfd.MultivariateNormalDiag(loc=actions_mu, scale_diag=[tf.exp(LOGSTD), tf.exp(LOGSTD)])
             dist_old = tfd.MultivariateNormalDiag(loc=feed['old_mus'], scale_diag=[tf.exp(LOGSTD), tf.exp(LOGSTD)])
@@ -52,7 +53,6 @@ class Generator():
             log_oldp_n = dist_old.log_prob(feed['actions'])
 
             ratio_n = tf.exp(log_p_n - log_oldp_n)
-            # ratio_n = tf.exp(log_p_n) / tf.exp(log_oldp_n)
             surrogate_loss = None
             if use_ppo:
                 surrogate1 = ratio_n * feed['advants']
@@ -71,10 +71,17 @@ class Generator():
         weight_idx = 0
         for shape in shapes:
             size = np.prod(shape)
-            self.model.trainable_weights[weight_idx].assign(tf.reshape(theta[start:start + size], shape))
+            self.model.trainable_weights[weight_idx].assign(tf.reshape(theta[start:(start + size)], shape))
             weight_idx += 1
             start += size
         return self.__generator_loss(feed)
+    
+    def plot_gradients(self, g):
+        space = np.arange(1, g.numpy().size+1, dtype=int)
+        plt.figure()
+        plt.plot(space, g.numpy())
+        plt.savefig('./plots/gradients', dpi=100)
+        plt.close()
     
     def fisher_vector_product(self, p, feed, cg_damping=0.1):
         N = feed['states'].shape[0]
@@ -92,7 +99,7 @@ class Generator():
         with tf.GradientTape() as tape_gvp:
             tape_gvp.watch(var_list)
             with tf.GradientTape() as grad_tape:
-                actions_mu = self.model([feed['states'], feed['codes']], training=True)
+                actions_mu = normalize_mu(self.model([feed['states'], feed['codes']], training=True))
                 kl_firstfixed = gauss_selfKL_firstfixed(actions_mu, LOGSTD) / Nf
 
             grads = grad_tape.gradient(kl_firstfixed, var_list)
@@ -139,7 +146,7 @@ class Generator():
             weight_idx = 0
             for shape in shapes:
                 size = np.prod(shape)
-                self.model.trainable_weights[weight_idx].assign(tf.reshape(theta[start:start + size], shape))
+                self.model.trainable_weights[weight_idx].assign(tf.reshape(theta[start:(start + size)], shape))
                 weight_idx += 1
                 start += size
         
@@ -276,6 +283,7 @@ class ValueNet():
         x = Dense(128, kernel_initializer=initializer)(x)
         x = LeakyReLU()(x)
         output = Dense(1)(x)
+        # output = tf.keras.activations.sigmoid(output)
 
         model = Model(inputs=[states, codes], outputs=output)
         return model
@@ -303,7 +311,7 @@ class ValueNet():
         episode_loss = loss / total_train_size
         episode_loss = episode_loss.item()
 
-        return loss
+        return episode_loss
 
 class Models():
     def __init__(self, state_dims=10, action_dims=2, code_dims=3):

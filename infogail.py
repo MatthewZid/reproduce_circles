@@ -27,8 +27,6 @@ class Agent():
         c_traj = []
         env = CircleEnv()
 
-        logstd = np.array([LOGSTD, LOGSTD])
-
         # generate actions for every current state
         state_obsrv = env.reset() # reset environment state
         code_tf = tf.constant(code)
@@ -40,20 +38,14 @@ class Agent():
             state_tf = tf.expand_dims(state_tf, axis=0)
             action_mu = models.generator.model([state_tf, code_tf], training=False)
             action_mu = tf.squeeze(action_mu).numpy()
-            action_std = np.exp(logstd)
-
-            # sample action
-            z = np.random.randn(1, logstd.shape[0])
-            action = action_mu + action_std * z[0]
-            # action = np.clip(action, -1, 1)
 
             # current_state = (state_obsrv[-2], state_obsrv[-1])
             s_traj.append(state_obsrv)
-            a_traj.append(action)
+            a_traj.append(action_mu)
             c_traj.append(code)
 
             # 2. environment step
-            state_obsrv, done = env.step(action)
+            state_obsrv, done = env.step(action_mu)
 
             if done:
                 s_traj = np.array(s_traj, dtype=np.float32)
@@ -72,7 +64,7 @@ class Agent():
         return trajectory_dict
 
 class InfoGAIL():
-    def __init__(self, batch_size=2048, code_batch=384, episodes=6000, gamma=0.997, lam=0.97):
+    def __init__(self, batch_size=2048, code_batch=384, episodes=10000, gamma=0.997, lam=0.97):
         self.batch = batch_size
         self.code_batch = code_batch
         self.episodes = episodes
@@ -129,7 +121,7 @@ class InfoGAIL():
     def show_loss(self):
         epoch_space = np.arange(1, len(self.gen_result)+1, dtype=int)
         plt.figure()
-        plt.ylim(-100, 100)
+        # plt.ylim(-100, 100)
         plt.title('Surrogate loss')
         plt.plot(epoch_space, self.gen_result)
         plt.savefig('./plots/trpo_loss', dpi=100)
@@ -163,7 +155,7 @@ class InfoGAIL():
                 trajectories = pool.map(agent.run, sampled_codes)
             
             for traj in trajectories:
-                traj['old_action_mus'] = models.generator.model([traj['states'], traj['codes']], training=False)
+                traj['old_action_mus'] = normalize_mu(models.generator.model([traj['states'], traj['codes']], training=False))
             
             generated_states = np.concatenate([traj['states'] for traj in trajectories])
             generated_actions = np.concatenate([traj['actions'] for traj in trajectories])
@@ -227,7 +219,7 @@ class InfoGAIL():
                 traj['returns'] = discount(traj['rewards'], self.gamma)
             
             advants = np.concatenate([traj['advants'] for traj in trajectories])
-            advants = (advants - advants.mean()) / advants.std()
+            advants /= advants.std()
 
             # train value net for next iter
             returns = np.expand_dims(np.concatenate([traj['returns'] for traj in trajectories]), axis=1)

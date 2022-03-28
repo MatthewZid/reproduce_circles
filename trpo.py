@@ -6,10 +6,11 @@ import tensorflow as tf
 
 improved = 0
 save_loss = True
-save_models = False
+save_models = True
 resume_training = False
 use_ppo = False
-LOGSTD = -3.5
+LOGSTD = tf.math.log(0.005)
+SPEED = 0.02
 
 def discount(x, gamma):
     assert x.ndim >= 1
@@ -64,6 +65,19 @@ def gauss_KL(mu1, logstd1, mu2, logstd2):
     kl = tf.reduce_sum(logstd2 - logstd1 + (var1 + tf.square(mu1 - mu2))/(2*var2) - 0.5)
     return kl
 
+def normalize_mu(action_mu):
+    norm = tf.math.sqrt(tf.math.add(tf.math.pow(tf.gather(action_mu, 0, axis=1),2), tf.math.pow(tf.gather(action_mu, 1, axis=1),2)))
+    norm = tf.expand_dims(norm, 1)
+
+    if tf.where(tf.math.greater(norm, 1e-8)).shape[0] != 0:
+        action_mu /= norm
+    else:
+        action_mu = tf.concat([tf.ones((action_mu.shape[0],1)), tf.zeros((action_mu.shape[0],1))], 1)
+    
+    action_mu *= SPEED
+
+    return action_mu
+
 def linesearch(f, x, feed, fullstep, expected_improve_rate):
     accept_ratio = .1
     max_backtracks = 10
@@ -72,13 +86,13 @@ def linesearch(f, x, feed, fullstep, expected_improve_rate):
         xnew = x + stepfrac * fullstep
         newfval = f(xnew, feed)[0]
         actual_improve = fval - newfval
+        # actual_improve = newfval - fval
         expected_improve = expected_improve_rate * stepfrac
         ratio = actual_improve / expected_improve
         if ratio > accept_ratio and actual_improve > 0:
             global improved
             improved += 1
             return xnew
-    # print("NOT IMPROVED............")
     return x
 
 def conjugate_gradient(f_Ax, feed, b, cg_iters=10, residual_tol=1e-10):
