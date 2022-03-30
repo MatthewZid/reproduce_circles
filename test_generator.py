@@ -16,13 +16,13 @@ env = CircleEnv()
 load_trpo_weights = True
 
 def create_generator(state_dims, code_dims):
-    initializer = tf.keras.initializers.HeNormal()
+    initializer = tf.keras.initializers.GlorotNormal()
     states = Input(shape=state_dims)
-    x = Dense(100, kernel_initializer=initializer)(states)
-    x = ReLU()(x)
+    x = Dense(100, kernel_initializer=initializer, activation='tanh')(states)
+    # x = ReLU()(x)
     codes = Input(shape=code_dims)
-    c = Dense(64, kernel_initializer=initializer)(codes)
-    c = ReLU()(c)
+    c = Dense(64, kernel_initializer=initializer, activation='tanh')(codes)
+    # c = ReLU()(c)
     # h = Add()([x, c])
     h = tf.concat([x,c], 1)
     actions = Dense(2)(h)
@@ -30,15 +30,13 @@ def create_generator(state_dims, code_dims):
     model = Model(inputs=[states,codes], outputs=actions)
     return model
 
-def generate_policy(generator, code, starting_point):
+def generate_policy(generator, code):
     s_traj = []
     a_traj = []
     c_traj = []
 
-    logstd = np.array([-0.4, -0.4])
-
     # generate actions for every current state
-    state_obsrv = env.reset(start=starting_point) # reset environment state
+    state_obsrv = env.reset() # reset environment state
     code_tf = tf.constant(code)
     code_tf = tf.expand_dims(code_tf, axis=0)
 
@@ -48,11 +46,6 @@ def generate_policy(generator, code, starting_point):
         state_tf = tf.expand_dims(state_tf, axis=0)
         action_mu = generator([state_tf, code_tf], training=False)
         action_mu = tf.squeeze(action_mu).numpy()
-
-        action_std = np.exp(logstd)
-        # sample action
-        # z = np.random.randn(1, logstd.shape[0])
-        # action = action_mu + action_std * z[0]
 
         # current_state = (state_obsrv[-2], state_obsrv[-1])
         s_traj.append(state_obsrv)
@@ -86,9 +79,10 @@ plt.figure()
 # plt.xlim(-1,1)
 # plt.ylim(-1,1)
 for i in trange(8):
-    pick = np.random.choice(expert_codes.shape[0], 1)[0]
-    traj = generate_policy(generator, expert_codes[pick], (expert_states[pick, -2], expert_states[pick, -1]))
-    argcolor = np.where(expert_codes[pick] == 1)[0][0] # find the index of code from one-hot
-    plt.scatter(traj[0][:, -2], traj[0][:, -1], s=4, c=colors[argcolor], alpha=0.4)
+    pick = np.random.choice(3, 1)[0]
+    one_hot = np.zeros((3,))
+    one_hot[pick] = 1
+    traj = generate_policy(generator, one_hot)
+    plt.scatter(traj[0][:, -2], traj[0][:, -1], s=4, c=colors[pick], alpha=0.4)
 plt.savefig("./plots/generated_trajectories", dpi=100)
 plt.close()

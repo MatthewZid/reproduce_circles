@@ -15,13 +15,13 @@ BATCH_SIZE = 2048
 show_fig = True
 
 def create_generator(state_dims, code_dims):
-    initializer = tf.keras.initializers.HeNormal()
+    initializer = tf.keras.initializers.GlorotNormal()
     states = Input(shape=state_dims)
-    x = Dense(100, kernel_initializer=initializer)(states)
-    x = ReLU()(x)
+    x = Dense(100, kernel_initializer=initializer, activation='tanh')(states)
+    # x = ReLU()(x)
     codes = Input(shape=code_dims)
-    c = Dense(64, kernel_initializer=initializer)(codes)
-    c = ReLU()(c)
+    c = Dense(64, kernel_initializer=initializer, activation='tanh')(codes)
+    # c = ReLU()(c)
     # h = Add()([x, c])
     h = tf.concat([x,c], 1)
     actions = Dense(2)(h)

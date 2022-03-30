@@ -21,14 +21,14 @@ class Generator():
         self.max_kl = max_kl
         self.model = self.create_generator()
     
-    def create_generator(state_dims, code_dims):
-        initializer = tf.keras.initializers.HeNormal()
-        states = Input(shape=state_dims)
-        x = Dense(100, kernel_initializer=initializer)(states)
-        x = ReLU()(x)
-        codes = Input(shape=code_dims)
-        c = Dense(64, kernel_initializer=initializer)(codes)
-        c = ReLU()(c)
+    def create_generator(self):
+        initializer = tf.keras.initializers.GlorotNormal()
+        states = Input(shape=self.state_dims)
+        x = Dense(100, kernel_initializer=initializer, activation='tanh')(states)
+        # x = ReLU()(x)
+        codes = Input(shape=self.code_dims)
+        c = Dense(64, kernel_initializer=initializer, activation='tanh')(codes)
+        # c = ReLU()(c)
         # h = Add()([x, c])
         h = tf.concat([x,c], 1)
         actions = Dense(2)(h)
@@ -127,6 +127,7 @@ class Generator():
 
             (surrogate_loss, grad_tape) = self.__generator_loss(feed)
             policy_gradient = flatgrad(self.model, surrogate_loss, grad_tape)
+            self.plot_gradients(policy_gradient)
             nans = tf.math.is_nan(policy_gradient)
             if(tf.where(nans).numpy().flatten().shape[0] != 0): print('NAN!!!!!!!!!!!')
             stepdir = conjugate_gradient(self.fisher_vector_product, feed, policy_gradient.numpy())
@@ -164,14 +165,14 @@ class Discriminator():
         self.disc_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
     
     def create_discriminator(self):
-        initializer = tf.keras.initializers.RandomNormal()
+        initializer = tf.keras.initializers.HeNormal()
         states = Input(shape=self.state_dims)
         actions = Input(shape=self.action_dims)
         merged = tf.concat([states,actions], 1)
         x = Dense(128, kernel_initializer=initializer)(merged)
-        x = LeakyReLU()(x)
+        x = LeakyReLU(alpha=0.1)(x)
         x = Dense(128, kernel_initializer=initializer)(x)
-        x = LeakyReLU()(x)
+        x = LeakyReLU(alpha=0.1)(x)
         score = Dense(1)(x)
 
         model = Model(inputs=[states, actions], outputs=score)
@@ -226,14 +227,14 @@ class Posterior():
         self.posterior_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
     
     def create_posterior(self):
-        initializer = tf.keras.initializers.RandomNormal()
+        initializer = tf.keras.initializers.HeNormal()
         states = Input(shape=self.state_dims)
         actions = Input(shape=self.action_dims)
         merged = tf.concat([states,actions], 1)
         x = Dense(128, kernel_initializer=initializer)(merged)
-        x = LeakyReLU()(x)
+        x = LeakyReLU(alpha=0.1)(x)
         x = Dense(128, kernel_initializer=initializer)(x)
-        x = LeakyReLU()(x)
+        x = LeakyReLU(alpha=0.1)(x)
         x = Dense(self.code_dims)(x)
         output = tf.keras.activations.softmax(x)
 
@@ -274,14 +275,14 @@ class ValueNet():
         self.value_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 
     def create_valuenet(self):
-        initializer = tf.keras.initializers.RandomNormal()
+        initializer = tf.keras.initializers.HeNormal()
         states = Input(shape=self.state_dims)
         codes = Input(shape=self.code_dims)
         merged = tf.concat([states,codes], 1)
         x = Dense(128, kernel_initializer=initializer)(merged)
-        x = LeakyReLU()(x)
+        x = LeakyReLU(alpha=0.1)(x)
         x = Dense(128, kernel_initializer=initializer)(x)
-        x = LeakyReLU()(x)
+        x = LeakyReLU(alpha=0.1)(x)
         output = Dense(1)(x)
         # output = tf.keras.activations.sigmoid(output)
 
