@@ -3,7 +3,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
 import tensorflow as tf
-from tensorflow.python.keras.layers import Input, Dense, ReLU, LeakyReLU, Add
+from tensorflow.python.keras.layers import Input, Dense, Concatenate, ReLU, LeakyReLU, Add
 from tensorflow.python.keras.models import Model
 import numpy as np
 import pickle as pkl
@@ -24,7 +24,7 @@ def create_generator(state_dims, code_dims):
     c = Dense(64, kernel_initializer=initializer, activation='tanh')(codes)
     # c = ReLU()(c)
     # h = Add()([x, c])
-    h = tf.concat([x,c], 1)
+    h = Concatenate(axis=1)([x,c])
     actions = Dense(2)(h)
 
     model = Model(inputs=[states,codes], outputs=actions)
@@ -68,11 +68,11 @@ generator = create_generator(10, 3)
 if load_trpo_weights: generator.load_weights('./saved_models/trpo/generator.h5')
 else: generator.load_weights('./saved_models/bc/generator.h5')
 
-expert_states, expert_actions, expert_codes = pkl.load(open("expert_traj.pkl", "rb"))
+# expert_states, expert_actions, expert_codes = pkl.load(open("expert_traj.pkl", "rb"))
 
-expert_states = np.concatenate(expert_states)
-expert_actions = np.concatenate(expert_actions)
-expert_codes = np.concatenate(expert_codes)
+# expert_states = np.concatenate(expert_states)
+# expert_actions = np.concatenate(expert_actions)
+# expert_codes = np.concatenate(expert_codes)
 
 colors = ['red','blue','green']
 plt.figure()

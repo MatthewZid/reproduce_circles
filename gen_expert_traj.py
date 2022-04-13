@@ -51,7 +51,7 @@ def main():
 	for i in range(len(rs)):
 		print("r = {:.2f}".format(rs[i]))
 
-		for j in tqdm(range(128)):
+		for j in tqdm(range(128)): # default: 128
 			state = env.reset()
 			s_traj.append([])
 			a_traj.append([])

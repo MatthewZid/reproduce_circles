@@ -3,7 +3,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 os.environ["CUDA_VISIBLE_DEVICES"]="-1"
 
 import tensorflow as tf
-from tensorflow.python.keras.layers import Input, Dense, ReLU, LeakyReLU, Add
+from tensorflow.python.keras.layers import Input, Dense, ReLU, Concatenate, LeakyReLU, Add
 from tensorflow.python.keras.models import Model
 import numpy as np
 import pickle as pkl
@@ -23,7 +23,7 @@ def create_generator(state_dims, code_dims):
     c = Dense(64, kernel_initializer=initializer, activation='tanh')(codes)
     # c = ReLU()(c)
     # h = Add()([x, c])
-    h = tf.concat([x,c], 1)
+    h = Concatenate(axis=1)([x,c])
     actions = Dense(2)(h)
 
     model = Model(inputs=[states,codes], outputs=actions)
@@ -76,7 +76,7 @@ gen_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 mse = tf.keras.losses.MeanSquaredError()
 
 # epochs = 50
-epochs = 1000
+epochs = 1500
 total_train_size = sum([el[0].shape[0] for el in list(train_data.as_numpy_iterator())])
 total_val_size = sum([el[0].shape[0] for el in list(val_data.as_numpy_iterator())])
 result_train = []
