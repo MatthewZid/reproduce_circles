@@ -8,7 +8,7 @@ from tensorflow.python.keras.models import Model
 import numpy as np
 import pickle as pkl
 import matplotlib.pyplot as plt
-from trpo import *
+from utils import *
 from tqdm import trange
 
 BATCH_SIZE = 2048

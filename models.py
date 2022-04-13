@@ -8,7 +8,7 @@ from tensorflow.python.keras.layers import Input, Dense, LeakyReLU, Concatenate,
 from tensorflow.python.keras.models import Model
 import numpy as np
 import matplotlib.pyplot as plt
-from trpo import *
+from utils import *
 
 tfd = tfp.distributions
 
