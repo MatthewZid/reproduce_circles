@@ -11,8 +11,8 @@ import time
 
 from circle_env import CircleEnv
 from tqdm import trange
-from trpo import *
-import trpo
+from utils import *
+import utils
 from scipy.ndimage import shift
 import multiprocessing as mp
 from models import *
@@ -279,7 +279,7 @@ class InfoGAIL():
                     epoch_space = np.arange(1, len(self.total_rewards)+1, dtype=int)
                     self.__saveplot(epoch_space, self.total_rewards, 0, 'rewards')
             
-            if episode != 0 and (episode % 100 == 0): print('Theta updates so far: {:d}'.format(trpo.improved))
+            if episode != 0 and (episode % 100 == 0): print('Theta updates so far: {:d}'.format(utils.improved))
 
             if save_models:
                 models.generator.model.save_weights('./saved_models/trpo/generator.h5')
