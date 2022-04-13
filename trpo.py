@@ -1,6 +1,6 @@
 import numpy as np
 import math
-import tqdm
+import random
 from scipy import signal
 import tensorflow as tf
 
@@ -11,6 +11,7 @@ resume_training = False
 use_ppo = False
 LOGSTD = tf.math.log(0.005)
 SPEED = 0.02
+BUFFER_RATIO = 0.67
 
 def discount(x, gamma):
     assert x.ndim >= 1
@@ -18,7 +19,7 @@ def discount(x, gamma):
 
 def gauss_log_prob(mu, logstd, x):
     var = tf.exp(2*logstd)
-    gp = -tf.square(x - mu)/(2 * var) - .5*tf.math.log(tf.constant(2*np.pi)) - logstd
+    gp = -tf.square(x - mu)/(2 * var) - .5*tf.math.log(tf.constant(2*np.pi, dtype=tf.float32)) - logstd
     return tf.reduce_sum(gp, [1])
 
 def gauss_ent(logstd):
@@ -117,13 +118,23 @@ def conjugate_gradient(f_Ax, feed, b, cg_iters=10, residual_tol=1e-10):
     return x
 
 class ReplayBuffer():
-    def __init__(self, buffer_size=1024):
+    def __init__(self, buffer_size=1024, sample_size=512):
         self.buffer_size = buffer_size
+        self.sample_size = sample_size
         self.buffer = []
     
+    def len(self):
+        return len(self.buffer)
+    
     def add(self, trajectory):
-        if (len(self.buffer) + 1) < self.buffer_size:
+        if len(self.buffer) < self.buffer_size:
             self.buffer.append(trajectory)
         else:
             self.buffer.pop(0)
             self.buffer.append(trajectory)
+    
+    def sample(self):
+        if len(self.buffer) < self.sample_size:
+            return random.sample(self.buffer, len(self.buffer))
+        else:
+            return random.sample(self.buffer, self.sample_size)
