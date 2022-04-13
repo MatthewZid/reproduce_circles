@@ -4,7 +4,7 @@ os.environ["CUDA_VISIBLE_DEVICES"]="-1"
 
 import tensorflow as tf
 import tensorflow_probability as tfp
-from tensorflow.python.keras.layers import Input, Dense, LeakyReLU, ReLU, Add
+from tensorflow.python.keras.layers import Input, Dense, LeakyReLU, Concatenate, ReLU, Add
 from tensorflow.python.keras.models import Model
 import numpy as np
 import matplotlib.pyplot as plt
@@ -30,7 +30,7 @@ class Generator():
         c = Dense(64, kernel_initializer=initializer, activation='tanh')(codes)
         # c = ReLU()(c)
         # h = Add()([x, c])
-        h = tf.concat([x,c], 1)
+        h = Concatenate(axis=1)([x,c])
         actions = Dense(2)(h)
 
         model = Model(inputs=[states,codes], outputs=actions)
@@ -44,13 +44,13 @@ class Generator():
             nans = tf.math.is_nan(actions_mu)
             if(tf.where(nans).numpy().flatten().shape[0] != 0): print('Mus: NAN!!!!!!!!!!!')
 
-            # log_p_n = gauss_log_prob(actions_mu, LOGSTD, feed['actions'])
-            # log_oldp_n = gauss_log_prob(feed['old_mus'], LOGSTD, feed['actions'])
+            log_p_n = gauss_log_prob(actions_mu, LOGSTD, feed['actions'])
+            log_oldp_n = gauss_log_prob(feed['old_mus'], LOGSTD, feed['actions'])
             # ...OR...
-            dist = tfd.MultivariateNormalDiag(loc=actions_mu, scale_diag=[tf.exp(LOGSTD), tf.exp(LOGSTD)])
-            dist_old = tfd.MultivariateNormalDiag(loc=feed['old_mus'], scale_diag=[tf.exp(LOGSTD), tf.exp(LOGSTD)])
-            log_p_n = dist.log_prob(feed['actions'])
-            log_oldp_n = dist_old.log_prob(feed['actions'])
+            # dist = tfd.MultivariateNormalDiag(loc=actions_mu, scale_diag=[tf.exp(LOGSTD), tf.exp(LOGSTD)])
+            # dist_old = tfd.MultivariateNormalDiag(loc=feed['old_mus'], scale_diag=[tf.exp(LOGSTD), tf.exp(LOGSTD)])
+            # log_p_n = dist.log_prob(feed['actions'])
+            # log_oldp_n = dist_old.log_prob(feed['actions'])
 
             ratio_n = tf.exp(log_p_n - log_oldp_n)
             surrogate_loss = None
@@ -88,22 +88,24 @@ class Generator():
         Nf = tf.cast(N, tf.float32)
         var_list = self.model.trainable_weights
 
-        start = 0
-        tangents = []
-        for v in var_list:
-            size = np.prod(v.shape)
-            param = tf.reshape(p[start:(start+size)], v.shape)
-            tangents.append(param)
-            start += size
+        # start = 0
+        # tangents = []
+        # for v in var_list:
+        #     size = np.prod(v.shape)
+        #     param = tf.reshape(p[start:(start+size)], v.shape)
+        #     tangents.append(param)
+        #     start += size
 
         with tf.GradientTape() as tape_gvp:
             tape_gvp.watch(var_list)
             with tf.GradientTape() as grad_tape:
                 actions_mu = normalize_mu(self.model([feed['states'], feed['codes']], training=True))
-                kl_firstfixed = gauss_selfKL_firstfixed(actions_mu, LOGSTD) / Nf
+                kl_firstfixed = gauss_selfKL_firstfixed(actions_mu, LOGSTD)
 
-            grads = grad_tape.gradient(kl_firstfixed, var_list)
-            gvp = [tf.reduce_sum(g * t) for (g, t) in zip(grads, tangents)]
+            # grads = grad_tape.gradient(kl_firstfixed, var_list)
+            grads = flatgrad(self.model, kl_firstfixed, grad_tape)
+            # gvp = [tf.reduce_sum(g * t) for (g, t) in zip(grads, tangents)]
+            gvp = tf.reduce_sum(grads * p)
 
         fvp = flatgrad(self.model, gvp, tape_gvp)
         nans = tf.math.is_nan(fvp)
@@ -134,11 +136,11 @@ class Generator():
             shs = stepdir.dot(self.fisher_vector_product(stepdir, feed))
             assert shs > 0
 
-            lm = np.sqrt(shs / self.max_kl)
-            fullstep = stepdir / lm
+            lm = np.sqrt(2 * self.max_kl / shs)
+            fullstep = lm * stepdir
             neggdotstepdir = policy_gradient.numpy().dot(stepdir)
 
-            theta = linesearch(self.get_loss, thprev, feed, fullstep, neggdotstepdir / lm)
+            theta = linesearch(self.get_loss, thprev, feed, fullstep, neggdotstepdir)
             # set_from_flat(self.generator, theta)
             var_list = self.model.trainable_weights
             shapes = [v.shape for v in var_list]
@@ -170,9 +172,9 @@ class Discriminator():
         actions = Input(shape=self.action_dims)
         merged = tf.concat([states,actions], 1)
         x = Dense(128, kernel_initializer=initializer)(merged)
-        x = LeakyReLU(alpha=0.1)(x)
+        x = LeakyReLU()(x)
         x = Dense(128, kernel_initializer=initializer)(x)
-        x = LeakyReLU(alpha=0.1)(x)
+        x = LeakyReLU()(x)
         score = Dense(1)(x)
 
         model = Model(inputs=[states, actions], outputs=score)
@@ -232,9 +234,9 @@ class Posterior():
         actions = Input(shape=self.action_dims)
         merged = tf.concat([states,actions], 1)
         x = Dense(128, kernel_initializer=initializer)(merged)
-        x = LeakyReLU(alpha=0.1)(x)
+        x = LeakyReLU()(x)
         x = Dense(128, kernel_initializer=initializer)(x)
-        x = LeakyReLU(alpha=0.1)(x)
+        x = LeakyReLU()(x)
         x = Dense(self.code_dims)(x)
         output = tf.keras.activations.softmax(x)
 
@@ -280,9 +282,9 @@ class ValueNet():
         codes = Input(shape=self.code_dims)
         merged = tf.concat([states,codes], 1)
         x = Dense(128, kernel_initializer=initializer)(merged)
-        x = LeakyReLU(alpha=0.1)(x)
+        x = LeakyReLU()(x)
         x = Dense(128, kernel_initializer=initializer)(x)
-        x = LeakyReLU(alpha=0.1)(x)
+        x = LeakyReLU()(x)
         output = Dense(1)(x)
         # output = tf.keras.activations.sigmoid(output)
 

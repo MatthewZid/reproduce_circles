@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import pickle as pkl
 import numpy as np
 import yaml
+import time
 
 from circle_env import CircleEnv
 from tqdm import trange
@@ -56,12 +57,15 @@ class Agent():
         return (s_traj, a_traj, c_traj)
     
     def run(self, code):
-        trajectory_dict = {}
-        trajectory = self.__generate_trajectory(code)
-        trajectory_dict['states'] = np.copy(trajectory[0])
-        trajectory_dict['actions'] = np.copy(trajectory[1])
-        trajectory_dict['codes'] = np.copy(trajectory[2])
-        return trajectory_dict
+        try:
+            trajectory_dict = {}
+            trajectory = self.__generate_trajectory(code)
+            trajectory_dict['states'] = np.copy(trajectory[0])
+            trajectory_dict['actions'] = np.copy(trajectory[1])
+            trajectory_dict['codes'] = np.copy(trajectory[2])
+            return trajectory_dict
+        except KeyboardInterrupt:
+            time.sleep(1)
 
 class InfoGAIL():
     def __init__(self, batch_size=2048, code_batch=384, episodes=10000, gamma=0.997, lam=0.97):
@@ -84,11 +88,15 @@ class InfoGAIL():
         self.expert_actions = np.concatenate(expert_actions)
         self.expert_codes = np.concatenate(expert_codes)
 
+        # create replay buffer
+        self.buffer = ReplayBuffer(int(code_batch / BUFFER_RATIO), code_batch)
+
         generator_weight_path = ''
         if resume_training:
             with open("./saved_models/trpo/model.yml", 'r') as f:
                 data = yaml.safe_load(f)
                 self.starting_episode = data['episode']
+                print('\nRestarting from episode {:d}'.format(self.starting_episode))
                 self.gen_result = data['gen_loss']
                 self.disc_result = data['disc_loss']
                 self.post_result = data['post_loss']
@@ -154,6 +162,11 @@ class InfoGAIL():
             with mp.Pool(mp.cpu_count()) as pool:
                 trajectories = pool.map(agent.run, sampled_codes)
             
+            # Sample from buffer
+            # for traj in trajectories:
+            #     self.buffer.add(traj)
+            # trajectories = self.buffer.sample()
+            
             for traj in trajectories:
                 traj['old_action_mus'] = normalize_mu(models.generator.model([traj['states'], traj['codes']], training=False))
             
@@ -166,14 +179,16 @@ class InfoGAIL():
             # Sample state-action pairs χi ~ τi and χΕ ~ τΕ with the same batch size
             expert_idx = np.arange(self.expert_states.shape[0])
             np.random.shuffle(expert_idx)
+            # expert_idx = np.random.choice(self.expert_states.shape[0], int(self.expert_states.shape[0] / 2), replace=False)
             shuffled_expert_states = self.expert_states[expert_idx, :]
             shuffled_expert_actions = self.expert_actions[expert_idx, :]
 
             generated_idx = np.arange(generated_states.shape[0])
             np.random.shuffle(generated_idx)
-
+            # generated_idx = np.random.choice(generated_states.shape[0], int(generated_states.shape[0] / 2), replace=False)
             shuffled_generated_states = generated_states[generated_idx, :]
             shuffled_generated_actions = generated_actions[generated_idx, :]
+
             shuffled_generated_states = tf.convert_to_tensor(shuffled_generated_states, dtype=tf.float32)
             shuffled_generated_actions = tf.convert_to_tensor(shuffled_generated_actions, dtype=tf.float32)
             shuffled_expert_states = tf.convert_to_tensor(shuffled_expert_states, dtype=tf.float32)
@@ -188,6 +203,11 @@ class InfoGAIL():
             # train posterior
             generated_idx = np.arange(generated_states.shape[0])
             np.random.shuffle(generated_idx)
+            # shuffled_generated_states = np.concatenate([self.expert_states, generated_states], axis=0)
+            # shuffled_generated_actions = np.concatenate([self.expert_actions, generated_actions], axis=0)
+            # shuffled_generated_codes = np.concatenate([self.expert_codes, generated_codes], axis=0)
+            # generated_idx = np.arange(shuffled_generated_states.shape[0])
+            # np.random.shuffle(generated_idx)
             shuffled_generated_states = generated_states[generated_idx, :]
             shuffled_generated_actions = generated_actions[generated_idx, :]
             shuffled_generated_codes = generated_codes[generated_idx, :]
@@ -219,7 +239,7 @@ class InfoGAIL():
                 traj['returns'] = discount(traj['rewards'], self.gamma)
             
             advants = np.concatenate([traj['advants'] for traj in trajectories])
-            advants /= advants.std()
+            # advants /= advants.std()
 
             # train value net for next iter
             returns = np.expand_dims(np.concatenate([traj['returns'] for traj in trajectories]), axis=1)
