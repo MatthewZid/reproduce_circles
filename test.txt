@@ -1,0 +1,10 @@
+Posterior accuracy over expert state-action pairs
+              precision    recall  f1-score   support
+
+           0       0.84      0.94      0.89       619
+           1       0.95      0.85      0.90       696
+           2       0.96      0.96      0.96       685
+
+    accuracy                           0.92      2000
+   macro avg       0.92      0.92      0.91      2000
+weighted avg       0.92      0.92      0.92      2000 

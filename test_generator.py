@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 from utils import *
 from tqdm import trange
 from circle_env import CircleEnv
+from sklearn.metrics import classification_report
 
 env = CircleEnv()
 load_trpo_weights = True
@@ -28,6 +29,21 @@ def create_generator(state_dims, code_dims):
     actions = Dense(2)(h)
 
     model = Model(inputs=[states,codes], outputs=actions)
+    return model
+
+def create_posterior(state_dims, action_dims, code_dims):
+    initializer = tf.keras.initializers.HeNormal()
+    states = Input(shape=state_dims)
+    actions = Input(shape=action_dims)
+    merged = tf.concat([states,actions], 1)
+    x = Dense(128, kernel_initializer=initializer)(merged)
+    x = LeakyReLU()(x)
+    x = Dense(128, kernel_initializer=initializer)(x)
+    x = LeakyReLU()(x)
+    x = Dense(code_dims)(x)
+    output = tf.keras.activations.softmax(x)
+
+    model = Model(inputs=[states, actions], outputs=output)
     return model
 
 def generate_policy(generator, code):
@@ -64,15 +80,28 @@ def generate_policy(generator, code):
     return (s_traj, a_traj, c_traj)
 
 generator = create_generator(10, 3)
+posterior = create_posterior(10, 2, 3)
 
 if load_trpo_weights: generator.load_weights('./saved_models/trpo/generator.h5')
 else: generator.load_weights('./saved_models/bc/generator.h5')
+posterior.load_weights('./saved_models/trpo/posterior.h5')
 
-# expert_states, expert_actions, expert_codes = pkl.load(open("expert_traj.pkl", "rb"))
+expert_states, expert_actions, expert_codes = pkl.load(open("expert_traj.pkl", "rb"))
 
-# expert_states = np.concatenate(expert_states)
-# expert_actions = np.concatenate(expert_actions)
-# expert_codes = np.concatenate(expert_codes)
+expert_states = np.concatenate(expert_states)
+expert_actions = np.concatenate(expert_actions)
+expert_codes = np.concatenate(expert_codes)
+
+# InfoGAIL accuracy method
+sampled_expert_idx = np.random.choice(expert_states.shape[0], 2000, replace=False)
+sampled_expert_states = expert_states[sampled_expert_idx, :]
+sampled_expert_actions = expert_actions[sampled_expert_idx, :]
+sampled_expert_codes = np.argmax(expert_codes[sampled_expert_idx, :], axis=1)
+probs = posterior([sampled_expert_states, sampled_expert_actions], training=False).numpy()
+codes_pred = np.argmax(probs, axis=1)
+
+print('Posterior accuracy over expert state-action pairs')
+print(classification_report(sampled_expert_codes, codes_pred))
 
 colors = ['red','blue','green']
 plt.figure()
